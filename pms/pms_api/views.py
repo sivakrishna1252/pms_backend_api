@@ -1,5 +1,8 @@
 from django.contrib.auth import get_user_model
+from django.conf import settings
+from django.core.mail import send_mail
 from django.utils import timezone
+import logging
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -28,11 +31,35 @@ from .serializers import (
 
 #all api response function
 User = get_user_model()
+logger = logging.getLogger(__name__)
+
 def api_response(success, message, code, data=None):
     return Response(
         {"success": success, "message": message, "code": code, "data": data},
         status=code,
     )
+
+def send_task_assignment_email(employee, task):
+    subject = f"Task Assigned: {task.title}"
+    message = (
+        f"Hi {employee.first_name or employee.username},\n\n"
+        f"A task has been assigned to you.\n\n"
+        f"Task: {task.title}\n"
+        f"Description: {task.description or 'N/A'}\n"
+        f"Status: {task.status}\n\n"
+        "Please check your dashboard and start work as scheduled.\n\n"
+        "Regards,\nPMS Team"
+    )
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+            recipient_list=[employee.email],
+            fail_silently=False,
+        )
+    except Exception:
+        logger.exception("Failed to send task assignment email to %s for task %s", employee.email, task.id)
 
 
 
@@ -172,7 +199,17 @@ class TaskViewSet(viewsets.ModelViewSet):
         return [IsAuthenticated()]
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        task = serializer.save(created_by=self.request.user)
+        if task.assigned_to and task.assigned_to.email:
+            Notification.objects.create(
+                user=task.assigned_to,
+                type="TASK_ASSIGNED",
+                title="New Task Assigned",
+                message=f"Task '{task.title}' was assigned to you.",
+                ref_type=Notification.RefType.TASK,
+                ref_id=task.id,
+            )
+            send_task_assignment_email(task.assigned_to, task)
 
     def create(self, request, *args, **kwargs):
         return super().create(request, *args, **kwargs)
@@ -202,6 +239,7 @@ class TaskViewSet(viewsets.ModelViewSet):
             ref_type=Notification.RefType.TASK,
             ref_id=task.id,
         )
+        send_task_assignment_email(employee, task)
         return api_response(
             True,
             "Task assigned successfully.",

@@ -13,8 +13,10 @@ class StandardResultsSetPagination(PageNumberPagination):
                 "success": True,
                 "message": "Data fetched successfully.",
                 "code": 200,
-                
                 "data": {
+                    "results": data,
+                },
+                "meta": {
                     "page": self.page.number,
                     "page_size": self.get_page_size(self.request),
                     "total": self.page.paginator.count,

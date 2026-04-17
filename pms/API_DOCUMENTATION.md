@@ -31,7 +31,8 @@ Success response:
   "message": "Login successful.",
   "code": 200,
   "data": {
-    "token": "your_token_here",
+    "access": "your_access_token_here",
+    "refresh": "your_refresh_token_here",
     "user": {
       "id": 1,
       "first_name": "Admin",
@@ -78,7 +79,7 @@ Body:
 
 ### GET `/auth/me`
 Headers:
-- `Authorization: Token <token>`
+- `Authorization: Bearer <access_token>`
 
 Response:
 ```json
@@ -117,6 +118,26 @@ Body:
 ### GET `/users/`
 Pagination query params:
 - `?page=1&page_size=10`
+
+Paginated response format:
+```json
+{
+  "success": true,
+  "message": "Data fetched successfully.",
+  "code": 200,
+  "data": {
+    "results": []
+  },
+  "meta": {
+    "page": 1,
+    "page_size": 10,
+    "total": 5,
+    "total_pages": 1,
+    "next": null,
+    "previous": null
+  }
+}
+```
 
 ### GET `/users/{id}/`
 
@@ -159,6 +180,9 @@ Body:
 ```
 
 ### GET `/projects/`
+Pagination query params:
+- `?page=1&page_size=10`
+
 ### GET `/projects/{id}/`
 
 ### PATCH `/projects/{id}/`
@@ -191,6 +215,9 @@ Body:
 ```
 
 ### GET `/milestones/`
+Pagination query params:
+- `?page=1&page_size=10`
+
 ### GET `/milestones/{id}/`
 
 ### PATCH `/milestones/{id}/`
@@ -226,6 +253,9 @@ Body:
 ```
 
 ### GET `/tasks/`
+Pagination query params:
+- `?page=1&page_size=10`
+
 ### GET `/tasks/{id}/`
 ### PATCH `/tasks/{id}/`
 ### DELETE `/tasks/{id}/`
@@ -259,20 +289,33 @@ Body:
 ```json
 {}
 ```
+Response includes task status as `IN_PROGRESS`.
 
 ### POST `/tasks/{id}/pause/`
 Body:
 ```json
 {}
 ```
+Response includes task status as `PAUSED`.
 
 ### POST `/tasks/{id}/stop/`
 Body:
 ```json
 {}
 ```
+Response includes `duration_seconds` and cumulative `total_time_spent_seconds`.
 
 ### GET `/tasks/{id}/time-logs/`
+Use this endpoint to check worked time history per task.
+
+### Employee task lifecycle (recommended flow)
+1. Employee opens assigned task from `GET /my/tasks` or `GET /tasks/{id}/`
+2. Start work: `POST /tasks/{id}/start/`
+3. Pause break: `POST /tasks/{id}/pause/`
+4. Resume work: `POST /tasks/{id}/start/` again
+5. Stop work: `POST /tasks/{id}/stop/`
+6. Mark completion: `PATCH /tasks/{id}/status` with `"COMPLETED"`
+7. Verify tracked time: `GET /tasks/{id}/time-logs/`
 
 ### GET `/my/tasks`
 
@@ -325,7 +368,7 @@ Each dashboard response is role-based and returned in:
 ## 10) Validation Rules
 
 - Email must end with `@apparatus.solutions`
-- Protected APIs require `Authorization: Token <token>`
+- Protected APIs require `Authorization: Bearer <access_token>`
 - Only assigned employee can start/pause/stop their task
 - Project `deadline` is immutable after create
 - Milestone `end_date` is immutable after create
