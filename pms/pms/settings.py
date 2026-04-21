@@ -43,6 +43,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'pms',
     'rest_framework',
+    'drf_spectacular',
     'corsheaders',
     'pms_api',
 ]
@@ -135,8 +136,23 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "pms_api.pagination.StandardResultsSetPagination",
     "PAGE_SIZE": 10,
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Project Management System API",
+    "DESCRIPTION": "Role-based APIs for Admin, BA, Employee and common flows.",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "TAGS": [
+        {"name": "Common APIs", "description": "Authentication and shared APIs."},
+        {"name": "Admin APIs", "description": "Admin-only management APIs."},
+        {"name": "BA/Admin APIs", "description": "APIs used by BA and Admin."},
+        {"name": "BA/Employee APIs", "description": "Task APIs used by BA and Employee."},
+        {"name": "Employee APIs", "description": "Employee-focused APIs."},
+    ],
 }
 
 CORS_ALLOW_ALL_ORIGINS = os.getenv("CORS_ALLOW_ALL_ORIGINS", "True").lower() == "true"

@@ -1,6 +1,43 @@
 # Project Management System API Documentation
 
 Base URL: `http://127.0.0.1:8000/api/v1`
+Swagger UI: `http://127.0.0.1:8000/api/docs/swagger/`
+ReDoc: `http://127.0.0.1:8000/api/docs/redoc/`
+
+## Run With Docker
+
+From project root (`pms/`):
+
+```bash
+docker compose up --build
+```
+
+Then access:
+- API base: `http://127.0.0.1:8000/api/v1`
+- Swagger: `http://127.0.0.1:8000/api/docs/swagger/`
+
+Stop containers:
+```bash
+docker compose down
+```
+
+### Production Docker (Gunicorn)
+
+Build and run production profile:
+
+```bash
+docker compose -f docker-compose.prod.yml up --build -d
+```
+
+View logs:
+```bash
+docker compose -f docker-compose.prod.yml logs -f
+```
+
+Stop production containers:
+```bash
+docker compose -f docker-compose.prod.yml down
+```
 
 ---
 
@@ -20,7 +57,7 @@ Request:
 ```json
 {
   "email": "admin@apparatus.solutions",
-  "password": "123456"
+  "password": "Admin@123"
 }
 ```
 
@@ -162,6 +199,15 @@ Body (partial):
 ```
 
 ### DELETE `/users/{id}/`
+
+### POST `/admin/reset-password` (Admin only)
+Body:
+```json
+{
+  "email": "employee@apparatus.solutions",
+  "new_password": "NewPassword@123"
+}
+```
 
 ---
 
@@ -352,6 +398,56 @@ Body:
 ### GET `/admin/dashboard`
 ### GET `/ba/dashboard`
 ### GET `/employee/dashboard`
+### GET `/admin/overview` (Admin only)
+
+Use this endpoint for a single monitoring response that combines:
+- overall platform counts
+- task status distribution
+- BA-wise work summary
+- Employee-wise work and time summary
+- Project/Milestone/Task-level activity with both ID and Name fields
+
+Optional query params:
+- `project_id` -> filter overview for one project
+- `milestone_id` -> filter overview for one milestone
+- `task_id` -> filter overview for one task
+
+Sample response shape:
+```json
+{
+  "success": true,
+  "message": "Admin overview fetched.",
+  "code": 200,
+  "data": {
+    "filters": {
+      "project_id": "2",
+      "milestone_id": null,
+      "task_id": null
+    },
+    "overview": {
+      "users_count": 10,
+      "ba_count": 2,
+      "employee_count": 7,
+      "projects_count": 3,
+      "tasks_count": 20,
+      "active_timers": 1
+    },
+    "task_status_counts": {
+      "not_started": 5,
+      "in_progress": 4,
+      "paused": 2,
+      "completed": 7,
+      "delayed": 1,
+      "blocked": 1
+    },
+    "ba_summary": [],
+    "employee_summary": [],
+    "projects": [],
+    "milestones": [],
+    "tasks": []
+  }
+}
+```
 
 Each dashboard response is role-based and returned in:
 ```json
@@ -372,10 +468,39 @@ Each dashboard response is role-based and returned in:
 - Only assigned employee can start/pause/stop their task
 - Project `deadline` is immutable after create
 - Milestone `end_date` is immutable after create
+- User creation triggers an email with login credentials to that user
+- Task completion triggers an email to task creator (BA/Admin)
 
 ---
 
-## 11) Common Error Response
+## 11) Automated Deadline Mail Job
+
+Run this command daily (scheduler/cron):
+
+```bash
+python manage.py send_deadline_notifications
+```
+
+What it does:
+- Project due tomorrow and not completed -> mail to all active Admin + BA users
+- Project overdue and not completed -> status auto-set to `DELAYED` + mail to Admin + BA
+- Milestone overdue and not completed -> status auto-set to `DELAYED` + mail to milestone creator
+- Task overdue and not completed -> status auto-set to `DELAYED` + mail to task creator
+
+---
+
+## 12) Name Fields For Frontend
+
+For easier UI display, APIs now include name fields along with IDs:
+- Projects: `created_by_name`
+- Milestones: `project_name`, `created_by_name`
+- Tasks: `project_name`, `milestone_name`, `assigned_to_name`, `created_by_name`
+
+You can still send IDs in request body (`project`, `milestone`, `assigned_to`), but use these `*_name` fields in response to display readable labels in frontend tables/cards.
+
+---
+
+## 13) Common Error Response
 
 ```json
 {
@@ -392,7 +517,7 @@ Each dashboard response is role-based and returned in:
 
 ---
 
-## 12) Quick Postman Test Order
+## 14) Quick Postman Test Order
 
 1. `POST /auth/login` (Admin user)
 2. `POST /users/` (create BA/Employee)

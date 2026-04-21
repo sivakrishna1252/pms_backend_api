@@ -36,11 +36,11 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ["id", "first_name", "last_name", "email", "role", "status", "date_joined", "last_login"]
         read_only_fields = ["id", "date_joined", "last_login"]
 
-    def get_role(self, obj):
+    def get_role(self, obj) -> str:
         profile = getattr(obj, "profile", None)
         return getattr(profile, "role", None)
 
-    def get_status(self, obj):
+    def get_status(self, obj) -> str:
         profile = getattr(obj, "profile", None)
         return getattr(profile, "status", None)
 
@@ -99,10 +99,28 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
 #project serializer
 class ProjectSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = Project
-        fields = "__all__"
+        fields = [
+            "id",
+            "name",
+            "description",
+            "created_by",
+            "created_by_name",
+            "start_date",
+            "deadline",
+            "status",
+            "created_at",
+            "updated_at",
+        ]
         read_only_fields = ["id", "created_by", "created_at", "updated_at"]
+
+    def get_created_by_name(self, obj) -> str:
+        if not obj.created_by:
+            return ""
+        return obj.created_by.get_full_name().strip() or obj.created_by.email
 
     def validate(self, attrs):
         if self.instance and "deadline" in attrs and attrs["deadline"] != self.instance.deadline:
@@ -115,10 +133,30 @@ class ProjectSerializer(serializers.ModelSerializer):
 
 #milestone serializer
 class MilestoneSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField(read_only=True)
+    project_name = serializers.CharField(source="project.name", read_only=True)
+
     class Meta:
         model = Milestone
-        fields = "__all__"
+        fields = [
+            "id",
+            "project",
+            "project_name",
+            "name",
+            "start_date",
+            "end_date",
+            "status",
+            "created_by",
+            "created_by_name",
+            "created_at",
+            "updated_at",
+        ]
         read_only_fields = ["id", "created_by", "created_at", "updated_at"]
+
+    def get_created_by_name(self, obj) -> str:
+        if not obj.created_by:
+            return ""
+        return obj.created_by.get_full_name().strip() or obj.created_by.email
 
     def validate(self, attrs):
         if self.instance and "end_date" in attrs and attrs["end_date"] != self.instance.end_date:
@@ -130,10 +168,43 @@ class MilestoneSerializer(serializers.ModelSerializer):
 
 #task serializer
 class TaskSerializer(serializers.ModelSerializer):
+    created_by_name = serializers.SerializerMethodField(read_only=True)
+    assigned_to_name = serializers.SerializerMethodField(read_only=True)
+    project_name = serializers.CharField(source="project.name", read_only=True)
+    milestone_name = serializers.CharField(source="milestone.name", read_only=True)
+
     class Meta:
         model = Task
-        fields = "__all__"
+        fields = [
+            "id",
+            "project",
+            "project_name",
+            "milestone",
+            "milestone_name",
+            "title",
+            "description",
+            "assigned_to",
+            "assigned_to_name",
+            "created_by",
+            "created_by_name",
+            "status",
+            "priority",
+            "deadline",
+            "total_time_spent_seconds",
+            "created_at",
+            "updated_at",
+        ]
         read_only_fields = ["id", "created_by", "total_time_spent_seconds", "created_at", "updated_at"]
+
+    def get_created_by_name(self, obj) -> str:
+        if not obj.created_by:
+            return ""
+        return obj.created_by.get_full_name().strip() or obj.created_by.email
+
+    def get_assigned_to_name(self, obj) -> str:
+        if not obj.assigned_to:
+            return ""
+        return obj.assigned_to.get_full_name().strip() or obj.assigned_to.email
 
 
 
@@ -199,3 +270,8 @@ class AuthResponseSerializer(serializers.Serializer):
 
 class RefreshTokenRequestSerializer(serializers.Serializer):
     refresh = serializers.CharField()
+
+
+class AdminPasswordResetSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    new_password = serializers.CharField(min_length=6, write_only=True)
