@@ -2,6 +2,8 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    AdminForgotPasswordRequestOTPAPIView,
+    AdminForgotPasswordVerifyOTPAPIView,
     AdminPasswordResetAPIView,
     AdminOverviewAPIView,
     DashboardAPIView,
@@ -27,6 +29,8 @@ router.register(r"notifications", NotificationViewSet, basename="notifications")
 
 urlpatterns = [
     path("auth/login", LoginAPIView.as_view(), name="auth-login"),
+    path("auth/admin/forgot-password/request-otp", AdminForgotPasswordRequestOTPAPIView.as_view(), name="admin-forgot-password-request-otp"),
+    path("auth/admin/forgot-password/verify-otp", AdminForgotPasswordVerifyOTPAPIView.as_view(), name="admin-forgot-password-verify-otp"),
     path("auth/refresh", RefreshAPIView.as_view(), name="auth-refresh"),
     path("auth/me", MeAPIView.as_view(), name="auth-me"),
     path("my/tasks", MyTasksAPIView.as_view(), name="my-tasks"),

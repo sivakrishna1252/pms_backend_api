@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.db.models import Max
 from django.utils import timezone
 
 
@@ -65,6 +66,7 @@ class Milestone(TimeStampedModel):
         DELAYED = "DELAYED", "Delayed"
 
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="milestones")
+    milestone_no = models.PositiveIntegerField()
     name = models.CharField(max_length=255)
     start_date = models.DateField()
     end_date = models.DateField()
@@ -73,8 +75,21 @@ class Milestone(TimeStampedModel):
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="milestones_created"
     )
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["project", "milestone_no"], name="uniq_milestone_no_per_project"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self.milestone_no:
+            last_number = (
+                Milestone.objects.filter(project=self.project).aggregate(max_no=Max("milestone_no")).get("max_no") or 0
+            )
+            self.milestone_no = last_number + 1
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        return f"{self.project.name} - {self.name}"
+        return f"{self.project.name} - M{self.milestone_no}: {self.name}"
 
 
 

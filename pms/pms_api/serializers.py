@@ -2,6 +2,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.db import IntegrityError
+from django.core.files.uploadedfile import UploadedFile
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -140,6 +141,7 @@ class MilestoneSerializer(serializers.ModelSerializer):
         model = Milestone
         fields = [
             "id",
+            "milestone_no",
             "project",
             "project_name",
             "name",
@@ -151,7 +153,7 @@ class MilestoneSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_by", "created_at", "updated_at"]
+        read_only_fields = ["id", "milestone_no", "created_by", "created_at", "updated_at"]
 
     def get_created_by_name(self, obj) -> str:
         if not obj.created_by:
@@ -236,6 +238,12 @@ class FileAttachmentSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ["id", "uploaded_by", "mime_type", "size_bytes", "created_at", "updated_at"]
 
+    def validate_file(self, value):
+        # Reject plain strings/URLs and enforce multipart binary uploads.
+        if not isinstance(value, UploadedFile):
+            raise serializers.ValidationError("Upload a valid file using multipart/form-data.")
+        return value
+
 
 class AssignTaskSerializer(serializers.Serializer):
     user_id = serializers.IntegerField()
@@ -275,3 +283,22 @@ class RefreshTokenRequestSerializer(serializers.Serializer):
 class AdminPasswordResetSerializer(serializers.Serializer):
     email = serializers.EmailField()
     new_password = serializers.CharField(min_length=6, write_only=True)
+
+
+class AdminForgotPasswordRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
+class AdminForgotPasswordVerifySerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    otp = serializers.CharField(min_length=6, max_length=6)
+    new_password = serializers.CharField(min_length=6, write_only=True)
+
+
+class DeadlineChangeRequestSerializer(serializers.Serializer):
+    new_deadline = serializers.DateField(required=False, allow_null=True)
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=500)
+
+
+class DeleteRequestSerializer(serializers.Serializer):
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=500)

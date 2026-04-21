@@ -57,7 +57,7 @@ Request:
 ```json
 {
   "email": "admin@apparatus.solutions",
-  "password": "Admin@123"
+  "password": "Admin@1234"
 }
 ```
 
@@ -117,6 +117,31 @@ Body:
 ### GET `/auth/me`
 Headers:
 - `Authorization: Bearer <access_token>`
+
+### POST `/auth/admin/forgot-password/request-otp` (Admin only flow)
+Body:
+```json
+{
+  "email": "admin@apparatus.solutions"
+}
+```
+Behavior:
+- Works only for users with role `ADMIN` and `ACTIVE` status.
+- If email is not found -> `404`
+- If email belongs to non-admin user -> `403`
+- If admin account is inactive -> `403`
+- If valid active admin email -> OTP is sent.
+
+### POST `/auth/admin/forgot-password/verify-otp` (Admin only flow)
+Body:
+```json
+{
+  "email": "admin@apparatus.solutions",
+  "otp": "123456",
+  "new_password": "NewPassword@123"
+}
+```
+If OTP is valid, admin password is updated.
 
 Response:
 ```json
@@ -244,6 +269,25 @@ Body:
 
 ### DELETE `/projects/{id}/` (Admin only)
 
+### POST `/projects/{id}/request-deadline-change` (BA -> Admin approval request)
+Body:
+```json
+{
+  "new_deadline": "2026-06-10",
+  "reason": "Client requested extension"
+}
+```
+Creates admin notifications and sends email to active admins.
+
+### POST `/projects/{id}/request-delete` (BA -> Admin approval request)
+Body:
+```json
+{
+  "reason": "Project merged into another project"
+}
+```
+Creates admin notifications and sends email to active admins.
+
 ---
 
 ## 5) Milestone APIs
@@ -263,6 +307,11 @@ Body:
 ### GET `/milestones/`
 Pagination query params:
 - `?page=1&page_size=10`
+
+Milestone numbering behavior:
+- API now returns `milestone_no` for each milestone.
+- `milestone_no` is project-wise sequence (`1,2,3...`) so each project has its own milestone numbering.
+- Global DB `id` still exists for stable references.
 
 ### GET `/milestones/{id}/`
 
@@ -305,6 +354,16 @@ Pagination query params:
 ### GET `/tasks/{id}/`
 ### PATCH `/tasks/{id}/`
 ### DELETE `/tasks/{id}/`
+
+### POST `/tasks/{id}/request-deadline-change/` (Assigned Employee -> BA/Admin)
+Body:
+```json
+{
+  "new_deadline": "2026-04-30",
+  "reason": "Dependency task is blocked"
+}
+```
+Only assigned employee can call this. Request creates notification for task creator and sends email.
 
 ### POST `/tasks/{id}/assign/` (Admin, BA)
 Body:
@@ -370,9 +429,16 @@ Use this endpoint to check worked time history per task.
 ## 7) File APIs
 
 ### POST `/files/`
+Content-Type:
+- `multipart/form-data`
+
 Form-data fields:
 - `task` (optional, integer)
 - `file` (required, file)
+
+Important:
+- `file` must be an actual uploaded binary file. Sending a JSON string/path/URL is invalid.
+- Response includes file `id`; keep it for `GET /files/{id}/` or `DELETE /files/{id}/`.
 
 ### GET `/files/`
 ### GET `/files/{id}/`
@@ -391,6 +457,11 @@ Body:
 {}
 ```
 
+Why notifications are separate from files:
+- File upload stores document data for a task (`/files/`).
+- Notifications store user alerts/events (`/notifications/`), such as task assigned/completed.
+- These serve different frontend screens and lifecycle actions.
+
 ---
 
 ## 9) Dashboard APIs
@@ -400,12 +471,30 @@ Body:
 ### GET `/employee/dashboard`
 ### GET `/admin/overview` (Admin only)
 
+Admin behavior update:
+- `/admin/dashboard` now returns the same full payload shape as `/admin/overview` for consistency.
+- Prefer `/admin/overview` for admin UI integration.
+
 Use this endpoint for a single monitoring response that combines:
 - overall platform counts
 - task status distribution
 - BA-wise work summary
 - Employee-wise work and time summary
 - Project/Milestone/Task-level activity with both ID and Name fields
+
+`active_timers` meaning:
+- Count of currently running time logs (`TimeLog` records with `end_time = null`).
+- It shows how many timers are live right now across visible tasks.
+
+BA dashboard (`/ba/dashboard`) now includes employee progress summary for BA-created tasks:
+- `tasks_created`
+- `tasks_completed`
+- `tasks_in_progress`
+- `tasks_delayed`
+- `assigned_employees`
+- `employee_summary[]` with each employee's:
+  - `assigned_tasks`, `completed_tasks`, `in_progress_tasks`, `delayed_tasks`
+  - `tasks[]` list with task id/title/status/project/milestone/deadline/time spent
 
 Optional query params:
 - `project_id` -> filter overview for one project
@@ -482,10 +571,11 @@ python manage.py send_deadline_notifications
 ```
 
 What it does:
+- At/after 8:00 PM local time, any active task timers are auto-stopped and reminder mail is sent to those employees
 - Project due tomorrow and not completed -> mail to all active Admin + BA users
 - Project overdue and not completed -> status auto-set to `DELAYED` + mail to Admin + BA
 - Milestone overdue and not completed -> status auto-set to `DELAYED` + mail to milestone creator
-- Task overdue and not completed -> status auto-set to `DELAYED` + mail to task creator
+- Task overdue and not completed -> status auto-set to `DELAYED` + mail to task creator (typically BA/Admin)
 
 ---
 
@@ -493,8 +583,8 @@ What it does:
 
 For easier UI display, APIs now include name fields along with IDs:
 - Projects: `created_by_name`
-- Milestones: `project_name`, `created_by_name`
-- Tasks: `project_name`, `milestone_name`, `assigned_to_name`, `created_by_name`
+- Milestones: `milestone_no`, `project_name`, `created_by_name`
+- Tasks: `project_name`, `milestone_name`, `assigned_to_name`, `created_by_name` (and milestone number in dashboard payloads)
 
 You can still send IDs in request body (`project`, `milestone`, `assigned_to`), but use these `*_name` fields in response to display readable labels in frontend tables/cards.
 

@@ -1,10 +1,12 @@
 from django.contrib.auth import get_user_model
 from django.conf import settings
+from django.core.cache import cache
 from django.core.mail import send_mail
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 import logging
+import secrets
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
@@ -22,7 +24,11 @@ from .permissions import IsAdmin, IsAdminOrBA, user_role
 from .serializers import (
     AuthLoginSerializer,
     AuthResponseSerializer,
+    AdminForgotPasswordRequestSerializer,
+    AdminForgotPasswordVerifySerializer,
     AdminPasswordResetSerializer,
+    DeadlineChangeRequestSerializer,
+    DeleteRequestSerializer,
     FileAttachmentSerializer,
     MilestoneSerializer,
     NotificationSerializer,
@@ -37,12 +43,197 @@ from .serializers import (
 #all api response function
 User = get_user_model()
 logger = logging.getLogger(__name__)
+ADMIN_RESET_OTP_TTL_SECONDS = 600
 
 def api_response(success, message, code, data=None):
     return Response(
         {"success": success, "message": message, "code": code, "data": data},
         status=code,
     )
+
+
+def build_admin_overview_payload(project_id=None, milestone_id=None, task_id=None):
+    tasks_qs = Task.objects.select_related("project", "milestone", "assigned_to", "created_by").all()
+    if project_id:
+        tasks_qs = tasks_qs.filter(project_id=project_id)
+    if milestone_id:
+        tasks_qs = tasks_qs.filter(milestone_id=milestone_id)
+    if task_id:
+        tasks_qs = tasks_qs.filter(id=task_id)
+
+    task_ids = list(tasks_qs.values_list("id", flat=True))
+    project_ids = list(tasks_qs.values_list("project_id", flat=True).distinct())
+    milestone_ids = list(tasks_qs.exclude(milestone_id__isnull=True).values_list("milestone_id", flat=True).distinct())
+
+    project_qs = Project.objects.filter(id__in=project_ids)
+    milestone_qs = Milestone.objects.filter(id__in=milestone_ids)
+
+    ba_rows = list(
+        User.objects.filter(profile__role=UserProfile.Roles.BA)
+        .annotate(
+            tasks_created_count=Count("tasks_created", filter=Q(tasks_created__id__in=task_ids), distinct=True),
+            tasks_completed_count=Count(
+                "tasks_created",
+                filter=Q(tasks_created__status=Task.Status.COMPLETED, tasks_created__id__in=task_ids),
+                distinct=True,
+            ),
+            active_tasks_count=Count(
+                "tasks_created",
+                filter=Q(tasks_created__status=Task.Status.IN_PROGRESS, tasks_created__id__in=task_ids),
+                distinct=True,
+            ),
+            employees_assigned_count=Count("tasks_created__assigned_to", filter=Q(tasks_created__id__in=task_ids), distinct=True),
+        )
+        .values(
+            "id",
+            "first_name",
+            "last_name",
+            "email",
+            "tasks_created_count",
+            "tasks_completed_count",
+            "active_tasks_count",
+            "employees_assigned_count",
+        )
+        .order_by("first_name", "id")
+    )
+    ba_summary = [
+        {
+            "id": row["id"],
+            "first_name": row["first_name"],
+            "last_name": row["last_name"],
+            "email": row["email"],
+            "tasks_created": row["tasks_created_count"],
+            "tasks_completed": row["tasks_completed_count"],
+            "active_tasks": row["active_tasks_count"],
+            "employees_assigned": row["employees_assigned_count"],
+        }
+        for row in ba_rows
+    ]
+
+    employee_rows = list(
+        User.objects.filter(profile__role=UserProfile.Roles.EMPLOYEE)
+        .annotate(
+            assigned_tasks_count=Count("tasks_assigned", filter=Q(tasks_assigned__id__in=task_ids), distinct=True),
+            completed_tasks_count=Count(
+                "tasks_assigned",
+                filter=Q(tasks_assigned__status=Task.Status.COMPLETED, tasks_assigned__id__in=task_ids),
+                distinct=True,
+            ),
+            in_progress_tasks_count=Count(
+                "tasks_assigned",
+                filter=Q(tasks_assigned__status=Task.Status.IN_PROGRESS, tasks_assigned__id__in=task_ids),
+                distinct=True,
+            ),
+            blocked_tasks_count=Count(
+                "tasks_assigned",
+                filter=Q(tasks_assigned__status=Task.Status.BLOCKED, tasks_assigned__id__in=task_ids),
+                distinct=True,
+            ),
+            total_time_spent_seconds=Coalesce(
+                Sum("tasks_assigned__total_time_spent_seconds", filter=Q(tasks_assigned__id__in=task_ids)), 0
+            ),
+            active_timers_count=Count(
+                "time_logs",
+                filter=Q(time_logs__end_time__isnull=True, time_logs__task_id__in=task_ids),
+                distinct=True,
+            ),
+        )
+        .values(
+            "id",
+            "first_name",
+            "last_name",
+            "email",
+            "assigned_tasks_count",
+            "completed_tasks_count",
+            "in_progress_tasks_count",
+            "blocked_tasks_count",
+            "total_time_spent_seconds",
+            "active_timers_count",
+        )
+        .order_by("first_name", "id")
+    )
+    employee_summary = [
+        {
+            "id": row["id"],
+            "first_name": row["first_name"],
+            "last_name": row["last_name"],
+            "email": row["email"],
+            "assigned_tasks": row["assigned_tasks_count"],
+            "completed_tasks": row["completed_tasks_count"],
+            "in_progress_tasks": row["in_progress_tasks_count"],
+            "blocked_tasks": row["blocked_tasks_count"],
+            "total_time_spent_seconds": row["total_time_spent_seconds"],
+            "active_timers": row["active_timers_count"],
+        }
+        for row in employee_rows
+    ]
+
+    task_status_counts = {
+        "not_started": tasks_qs.filter(status=Task.Status.NOT_STARTED).count(),
+        "in_progress": tasks_qs.filter(status=Task.Status.IN_PROGRESS).count(),
+        "paused": tasks_qs.filter(status=Task.Status.PAUSED).count(),
+        "completed": tasks_qs.filter(status=Task.Status.COMPLETED).count(),
+        "delayed": tasks_qs.filter(status=Task.Status.DELAYED).count(),
+        "blocked": tasks_qs.filter(status=Task.Status.BLOCKED).count(),
+    }
+
+    return {
+        "filters": {"project_id": project_id, "milestone_id": milestone_id, "task_id": task_id},
+        "overview": {
+            "users_count": User.objects.filter(profile__role__in=[UserProfile.Roles.ADMIN, UserProfile.Roles.BA, UserProfile.Roles.EMPLOYEE]).count(),
+            "ba_count": User.objects.filter(profile__role=UserProfile.Roles.BA).count(),
+            "employee_count": User.objects.filter(profile__role=UserProfile.Roles.EMPLOYEE).count(),
+            "projects_count": project_qs.count() if project_id or milestone_id or task_id else Project.objects.count(),
+            "tasks_count": tasks_qs.count(),
+            "active_timers": TimeLog.objects.filter(end_time__isnull=True, task_id__in=task_ids).count(),
+        },
+        "task_status_counts": task_status_counts,
+        "ba_summary": ba_summary,
+        "employee_summary": employee_summary,
+        "projects": [
+            {
+                "id": project.id,
+                "name": project.name,
+                "status": project.status,
+                "created_by_id": project.created_by_id,
+                "created_by_name": project.created_by.get_full_name().strip() or project.created_by.email,
+            }
+            for project in project_qs
+        ],
+        "milestones": [
+            {
+                "id": milestone.id,
+                "milestone_no": milestone.milestone_no,
+                "name": milestone.name,
+                "project_id": milestone.project_id,
+                "project_name": milestone.project.name,
+                "status": milestone.status,
+                "created_by_id": milestone.created_by_id,
+                "created_by_name": milestone.created_by.get_full_name().strip() or milestone.created_by.email,
+            }
+            for milestone in milestone_qs
+        ],
+        "tasks": [
+            {
+                "id": task.id,
+                "title": task.title,
+                "project_id": task.project_id,
+                "project_name": task.project.name,
+                "milestone_id": task.milestone_id,
+                "milestone_no": task.milestone.milestone_no if task.milestone else None,
+                "milestone_name": task.milestone.name if task.milestone else None,
+                "status": task.status,
+                "created_by_id": task.created_by_id,
+                "created_by_name": task.created_by.get_full_name().strip() or task.created_by.email,
+                "assigned_to_id": task.assigned_to_id,
+                "assigned_to_name": (
+                    (task.assigned_to.get_full_name().strip() or task.assigned_to.email) if task.assigned_to else None
+                ),
+                "total_time_spent_seconds": task.total_time_spent_seconds,
+            }
+            for task in tasks_qs.order_by("-updated_at")
+        ],
+    }
 
 def send_task_assignment_email(employee, task):
     subject = f"Task Assigned: {task.title}"
@@ -65,6 +256,33 @@ def send_task_assignment_email(employee, task):
         )
     except Exception:
         logger.exception("Failed to send task assignment email to %s for task %s", employee.email, task.id)
+
+def admin_otp_cache_key(email):
+    return f"admin_reset_otp:{email.lower().strip()}"
+
+
+def send_admin_reset_otp_email(user, otp):
+    if not user.email:
+        return
+    subject = "PMS Admin Password Reset OTP"
+    message = (
+        f"Hi {user.first_name or user.username},\n\n"
+        "Use the OTP below to reset your admin account password.\n\n"
+        f"OTP: {otp}\n"
+        f"This OTP is valid for {ADMIN_RESET_OTP_TTL_SECONDS // 60} minutes.\n\n"
+        "If you did not request this, please ignore this email.\n\n"
+        "Regards,\nPMS Team"
+    )
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+    except Exception:
+        logger.exception("Failed to send admin reset OTP email to %s", user.email)
 
 
 def send_user_welcome_email(user, raw_password):
@@ -115,6 +333,62 @@ def send_task_completed_email(task, completed_by):
         )
     except Exception:
         logger.exception("Failed to send task completion email for task %s", task.id)
+
+
+def send_task_deadline_change_request_email(task, employee, owner, new_deadline=None, reason=""):
+    if not owner or not owner.email:
+        return
+    employee_name = employee.get_full_name().strip() or employee.email
+    subject = f"Task Deadline Change Request: {task.title}"
+    message = (
+        f"Hi {owner.first_name or owner.username},\n\n"
+        "An employee has requested a task deadline change.\n\n"
+        f"Task: {task.title}\n"
+        f"Requested by: {employee_name}\n"
+        f"Current Deadline: {task.deadline or 'N/A'}\n"
+        f"Requested Deadline: {new_deadline or 'Not provided'}\n"
+        f"Reason: {reason or 'No reason provided'}\n\n"
+        "Please review and update the deadline if needed.\n\n"
+        "Regards,\nPMS Team"
+    )
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+            recipient_list=[owner.email],
+            fail_silently=False,
+        )
+    except Exception:
+        logger.exception("Failed task deadline request email for task %s", task.id)
+
+
+def send_project_change_request_email(project, requester, admin_emails, request_type, new_deadline=None, reason=""):
+    if not admin_emails:
+        return
+    requester_name = requester.get_full_name().strip() or requester.email
+    subject = f"Project {request_type} Request: {project.name}"
+    message = (
+        "Hi Admin Team,\n\n"
+        f"A BA has submitted a project {request_type.lower()} request.\n\n"
+        f"Project: {project.name}\n"
+        f"Requested by: {requester_name}\n"
+        f"Current Deadline: {project.deadline}\n"
+        f"Requested Deadline: {new_deadline or 'Not applicable'}\n"
+        f"Reason: {reason or 'No reason provided'}\n\n"
+        "Please review and take action.\n\n"
+        "Regards,\nPMS Team"
+    )
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+            recipient_list=admin_emails,
+            fail_silently=False,
+        )
+    except Exception:
+        logger.exception("Failed project %s request email for project %s", request_type, project.id)
 
 
 
@@ -195,7 +469,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action == "destroy":
             return [IsAuthenticated(), IsAdmin()]
-        if self.action in {"create", "update", "partial_update"}:
+        if self.action in {"create", "update", "partial_update", "request_deadline_change", "request_delete"}:
             return [IsAuthenticated(), IsAdminOrBA()]
         return [IsAuthenticated()]
 
@@ -210,6 +484,84 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         return super().partial_update(request, *args, **kwargs)
+
+    @action(detail=True, methods=["post"], url_path="request-deadline-change")
+    def request_deadline_change(self, request, pk=None):
+        project = self.get_object()
+        if user_role(request.user) != UserProfile.Roles.BA:
+            return api_response(False, "Only BA can request project deadline change.", status.HTTP_403_FORBIDDEN)
+
+        serializer = DeadlineChangeRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        new_deadline = serializer.validated_data.get("new_deadline")
+        reason = serializer.validated_data.get("reason", "")
+
+        admin_users = User.objects.filter(
+            profile__role=UserProfile.Roles.ADMIN,
+            profile__status=UserProfile.Status.ACTIVE,
+        )
+        for admin_user in admin_users:
+            Notification.objects.create(
+                user=admin_user,
+                type="PROJECT_DEADLINE_CHANGE_REQUEST",
+                title="Project deadline change requested",
+                message=f"BA requested deadline change for project '{project.name}'.",
+                ref_type=Notification.RefType.PROJECT,
+                ref_id=project.id,
+            )
+
+        send_project_change_request_email(
+            project=project,
+            requester=request.user,
+            admin_emails=[user.email for user in admin_users if user.email],
+            request_type="DEADLINE_CHANGE",
+            new_deadline=new_deadline,
+            reason=reason,
+        )
+        return api_response(
+            True,
+            "Project deadline change request sent to admin.",
+            status.HTTP_200_OK,
+            {"project_id": project.id, "new_deadline": new_deadline, "reason": reason},
+        )
+
+    @action(detail=True, methods=["post"], url_path="request-delete")
+    def request_delete(self, request, pk=None):
+        project = self.get_object()
+        if user_role(request.user) != UserProfile.Roles.BA:
+            return api_response(False, "Only BA can request project delete.", status.HTTP_403_FORBIDDEN)
+
+        serializer = DeleteRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data.get("reason", "")
+
+        admin_users = User.objects.filter(
+            profile__role=UserProfile.Roles.ADMIN,
+            profile__status=UserProfile.Status.ACTIVE,
+        )
+        for admin_user in admin_users:
+            Notification.objects.create(
+                user=admin_user,
+                type="PROJECT_DELETE_REQUEST",
+                title="Project delete requested",
+                message=f"BA requested delete for project '{project.name}'.",
+                ref_type=Notification.RefType.PROJECT,
+                ref_id=project.id,
+            )
+
+        send_project_change_request_email(
+            project=project,
+            requester=request.user,
+            admin_emails=[user.email for user in admin_users if user.email],
+            request_type="DELETE",
+            reason=reason,
+        )
+        return api_response(
+            True,
+            "Project delete request sent to admin.",
+            status.HTTP_200_OK,
+            {"project_id": project.id, "reason": reason},
+        )
 
 
 
@@ -262,7 +614,9 @@ class TaskViewSet(viewsets.ModelViewSet):
         return queryset
 
     def get_permissions(self):
-        if self.action in {"create", "update", "partial_update", "destroy", "assign"}:
+        if self.action == "request_deadline_change":
+            return [IsAuthenticated()]
+        if self.action in {"create", "update", "partial_update", "destroy", "assign", "request_deadline_change"}:
             return [IsAuthenticated(), IsAdminOrBA()]
         return [IsAuthenticated()]
 
@@ -385,6 +739,46 @@ class TaskViewSet(viewsets.ModelViewSet):
             True, "Task status updated.", status.HTTP_200_OK, {"task_id": task.id, "task_name": task.title, "status": task.status}
         )
 
+    @action(detail=True, methods=["post"], url_path="request-deadline-change")
+    def request_deadline_change(self, request, pk=None):
+        task = self.get_object()
+        if user_role(request.user) != UserProfile.Roles.EMPLOYEE or task.assigned_to_id != request.user.id:
+            return api_response(
+                False,
+                "Only assigned employee can request task deadline change.",
+                status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = DeadlineChangeRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        new_deadline = serializer.validated_data.get("new_deadline")
+        reason = serializer.validated_data.get("reason", "")
+        owner = task.created_by
+
+        if owner:
+            Notification.objects.create(
+                user=owner,
+                type="TASK_DEADLINE_CHANGE_REQUEST",
+                title="Task deadline change requested",
+                message=f"Employee requested deadline change for task '{task.title}'.",
+                ref_type=Notification.RefType.TASK,
+                ref_id=task.id,
+            )
+            send_task_deadline_change_request_email(
+                task=task,
+                employee=request.user,
+                owner=owner,
+                new_deadline=new_deadline,
+                reason=reason,
+            )
+
+        return api_response(
+            True,
+            "Task deadline change request sent.",
+            status.HTTP_200_OK,
+            {"task_id": task.id, "new_deadline": new_deadline, "reason": reason},
+        )
+
 
 
 
@@ -445,18 +839,82 @@ class DashboardAPIView(APIView):
     def get(self, request):
         user = request.user
         if user_role(user) == UserProfile.Roles.ADMIN:
-            data = {
-                "users_count": User.objects.count(),
-                "projects_count": Project.objects.count(),
-                "tasks_count": Task.objects.count(),
-                "active_timers": TimeLog.objects.filter(end_time__isnull=True).count(),
-            }
-            return api_response(True, "Admin dashboard fetched.", status.HTTP_200_OK, data)
+            data = build_admin_overview_payload()
+            return api_response(True, "Admin dashboard fetched (same as admin overview).", status.HTTP_200_OK, data)
         if user_role(user) == UserProfile.Roles.BA:
+            ba_tasks_qs = Task.objects.filter(created_by=user).select_related("project", "milestone", "assigned_to")
+            employee_ids = list(ba_tasks_qs.exclude(assigned_to_id__isnull=True).values_list("assigned_to_id", flat=True).distinct())
+            employee_rows = list(
+                User.objects.filter(id__in=employee_ids, profile__role=UserProfile.Roles.EMPLOYEE)
+                .annotate(
+                    assigned_tasks_count=Count(
+                        "tasks_assigned", filter=Q(tasks_assigned__created_by=user), distinct=True
+                    ),
+                    completed_tasks_count=Count(
+                        "tasks_assigned",
+                        filter=Q(tasks_assigned__created_by=user, tasks_assigned__status=Task.Status.COMPLETED),
+                        distinct=True,
+                    ),
+                    in_progress_tasks_count=Count(
+                        "tasks_assigned",
+                        filter=Q(tasks_assigned__created_by=user, tasks_assigned__status=Task.Status.IN_PROGRESS),
+                        distinct=True,
+                    ),
+                    delayed_tasks_count=Count(
+                        "tasks_assigned",
+                        filter=Q(tasks_assigned__created_by=user, tasks_assigned__status=Task.Status.DELAYED),
+                        distinct=True,
+                    ),
+                )
+                .values(
+                    "id",
+                    "first_name",
+                    "last_name",
+                    "email",
+                    "assigned_tasks_count",
+                    "completed_tasks_count",
+                    "in_progress_tasks_count",
+                    "delayed_tasks_count",
+                )
+                .order_by("first_name", "id")
+            )
+            employee_summary = []
+            for row in employee_rows:
+                tasks_for_employee = ba_tasks_qs.filter(assigned_to_id=row["id"]).order_by("-updated_at")
+                employee_summary.append(
+                    {
+                        "id": row["id"],
+                        "first_name": row["first_name"],
+                        "last_name": row["last_name"],
+                        "email": row["email"],
+                        "assigned_tasks": row["assigned_tasks_count"],
+                        "completed_tasks": row["completed_tasks_count"],
+                        "in_progress_tasks": row["in_progress_tasks_count"],
+                        "delayed_tasks": row["delayed_tasks_count"],
+                        "tasks": [
+                            {
+                                "id": task.id,
+                                "title": task.title,
+                                "status": task.status,
+                                "project_id": task.project_id,
+                                "project_name": task.project.name,
+                                "milestone_id": task.milestone_id,
+                                "milestone_no": task.milestone.milestone_no if task.milestone else None,
+                                "milestone_name": task.milestone.name if task.milestone else None,
+                                "deadline": task.deadline,
+                                "total_time_spent_seconds": task.total_time_spent_seconds,
+                            }
+                            for task in tasks_for_employee
+                        ],
+                    }
+                )
             data = {
-                "tasks_created": Task.objects.filter(created_by=user).count(),
-                "tasks_completed": Task.objects.filter(created_by=user, status=Task.Status.COMPLETED).count(),
-                "assigned_employees": User.objects.filter(tasks_assigned__created_by=user).distinct().count(),
+                "tasks_created": ba_tasks_qs.count(),
+                "tasks_completed": ba_tasks_qs.filter(status=Task.Status.COMPLETED).count(),
+                "tasks_in_progress": ba_tasks_qs.filter(status=Task.Status.IN_PROGRESS).count(),
+                "tasks_delayed": ba_tasks_qs.filter(status=Task.Status.DELAYED).count(),
+                "assigned_employees": len(employee_ids),
+                "employee_summary": employee_summary,
             }
             return api_response(True, "BA dashboard fetched.", status.HTTP_200_OK, data)
         data = {
@@ -483,186 +941,7 @@ class AdminOverviewAPIView(APIView):
         project_id = request.query_params.get("project_id")
         milestone_id = request.query_params.get("milestone_id")
         task_id = request.query_params.get("task_id")
-
-        tasks_qs = Task.objects.select_related("project", "milestone", "assigned_to", "created_by").all()
-        if project_id:
-            tasks_qs = tasks_qs.filter(project_id=project_id)
-        if milestone_id:
-            tasks_qs = tasks_qs.filter(milestone_id=milestone_id)
-        if task_id:
-            tasks_qs = tasks_qs.filter(id=task_id)
-
-        task_ids = list(tasks_qs.values_list("id", flat=True))
-        project_ids = list(tasks_qs.values_list("project_id", flat=True).distinct())
-        milestone_ids = list(tasks_qs.exclude(milestone_id__isnull=True).values_list("milestone_id", flat=True).distinct())
-
-        project_qs = Project.objects.filter(id__in=project_ids)
-        milestone_qs = Milestone.objects.filter(id__in=milestone_ids)
-
-        ba_rows = list(
-            User.objects.filter(profile__role=UserProfile.Roles.BA)
-            .annotate(
-                tasks_created_count=Count("tasks_created", filter=Q(tasks_created__id__in=task_ids), distinct=True),
-                tasks_completed_count=Count(
-                    "tasks_created",
-                    filter=Q(tasks_created__status=Task.Status.COMPLETED, tasks_created__id__in=task_ids),
-                    distinct=True,
-                ),
-                active_tasks_count=Count(
-                    "tasks_created",
-                    filter=Q(tasks_created__status=Task.Status.IN_PROGRESS, tasks_created__id__in=task_ids),
-                    distinct=True,
-                ),
-                employees_assigned_count=Count("tasks_created__assigned_to", filter=Q(tasks_created__id__in=task_ids), distinct=True),
-            )
-            .values(
-                "id",
-                "first_name",
-                "last_name",
-                "email",
-                "tasks_created_count",
-                "tasks_completed_count",
-                "active_tasks_count",
-                "employees_assigned_count",
-            )
-            .order_by("first_name", "id")
-        )
-        ba_summary = [
-            {
-                "id": row["id"],
-                "first_name": row["first_name"],
-                "last_name": row["last_name"],
-                "email": row["email"],
-                "tasks_created": row["tasks_created_count"],
-                "tasks_completed": row["tasks_completed_count"],
-                "active_tasks": row["active_tasks_count"],
-                "employees_assigned": row["employees_assigned_count"],
-            }
-            for row in ba_rows
-        ]
-
-        employee_rows = list(
-            User.objects.filter(profile__role=UserProfile.Roles.EMPLOYEE)
-            .annotate(
-                assigned_tasks_count=Count("tasks_assigned", filter=Q(tasks_assigned__id__in=task_ids), distinct=True),
-                completed_tasks_count=Count(
-                    "tasks_assigned",
-                    filter=Q(tasks_assigned__status=Task.Status.COMPLETED, tasks_assigned__id__in=task_ids),
-                    distinct=True,
-                ),
-                in_progress_tasks_count=Count(
-                    "tasks_assigned",
-                    filter=Q(tasks_assigned__status=Task.Status.IN_PROGRESS, tasks_assigned__id__in=task_ids),
-                    distinct=True,
-                ),
-                blocked_tasks_count=Count(
-                    "tasks_assigned",
-                    filter=Q(tasks_assigned__status=Task.Status.BLOCKED, tasks_assigned__id__in=task_ids),
-                    distinct=True,
-                ),
-                total_time_spent_seconds=Coalesce(
-                    Sum("tasks_assigned__total_time_spent_seconds", filter=Q(tasks_assigned__id__in=task_ids)), 0
-                ),
-                active_timers_count=Count(
-                    "time_logs",
-                    filter=Q(time_logs__end_time__isnull=True, time_logs__task_id__in=task_ids),
-                    distinct=True,
-                ),
-            )
-            .values(
-                "id",
-                "first_name",
-                "last_name",
-                "email",
-                "assigned_tasks_count",
-                "completed_tasks_count",
-                "in_progress_tasks_count",
-                "blocked_tasks_count",
-                "total_time_spent_seconds",
-                "active_timers_count",
-            )
-            .order_by("first_name", "id")
-        )
-        employee_summary = [
-            {
-                "id": row["id"],
-                "first_name": row["first_name"],
-                "last_name": row["last_name"],
-                "email": row["email"],
-                "assigned_tasks": row["assigned_tasks_count"],
-                "completed_tasks": row["completed_tasks_count"],
-                "in_progress_tasks": row["in_progress_tasks_count"],
-                "blocked_tasks": row["blocked_tasks_count"],
-                "total_time_spent_seconds": row["total_time_spent_seconds"],
-                "active_timers": row["active_timers_count"],
-            }
-            for row in employee_rows
-        ]
-
-        task_status_counts = {
-            "not_started": tasks_qs.filter(status=Task.Status.NOT_STARTED).count(),
-            "in_progress": tasks_qs.filter(status=Task.Status.IN_PROGRESS).count(),
-            "paused": tasks_qs.filter(status=Task.Status.PAUSED).count(),
-            "completed": tasks_qs.filter(status=Task.Status.COMPLETED).count(),
-            "delayed": tasks_qs.filter(status=Task.Status.DELAYED).count(),
-            "blocked": tasks_qs.filter(status=Task.Status.BLOCKED).count(),
-        }
-
-        data = {
-            "filters": {"project_id": project_id, "milestone_id": milestone_id, "task_id": task_id},
-            "overview": {
-                "users_count": User.objects.filter(profile__role__in=[UserProfile.Roles.ADMIN, UserProfile.Roles.BA, UserProfile.Roles.EMPLOYEE]).count(),
-                "ba_count": User.objects.filter(profile__role=UserProfile.Roles.BA).count(),
-                "employee_count": User.objects.filter(profile__role=UserProfile.Roles.EMPLOYEE).count(),
-                "projects_count": project_qs.count() if project_id or milestone_id or task_id else Project.objects.count(),
-                "tasks_count": tasks_qs.count(),
-                "active_timers": TimeLog.objects.filter(end_time__isnull=True, task_id__in=task_ids).count(),
-            },
-            "task_status_counts": task_status_counts,
-            "ba_summary": ba_summary,
-            "employee_summary": employee_summary,
-            "projects": [
-                {
-                    "id": project.id,
-                    "name": project.name,
-                    "status": project.status,
-                    "created_by_id": project.created_by_id,
-                    "created_by_name": project.created_by.get_full_name().strip() or project.created_by.email,
-                }
-                for project in project_qs
-            ],
-            "milestones": [
-                {
-                    "id": milestone.id,
-                    "name": milestone.name,
-                    "project_id": milestone.project_id,
-                    "project_name": milestone.project.name,
-                    "status": milestone.status,
-                    "created_by_id": milestone.created_by_id,
-                    "created_by_name": milestone.created_by.get_full_name().strip() or milestone.created_by.email,
-                }
-                for milestone in milestone_qs
-            ],
-            "tasks": [
-                {
-                    "id": task.id,
-                    "title": task.title,
-                    "project_id": task.project_id,
-                    "project_name": task.project.name,
-                    "milestone_id": task.milestone_id,
-                    "milestone_name": task.milestone.name if task.milestone else None,
-                    "status": task.status,
-                    "created_by_id": task.created_by_id,
-                    "created_by_name": task.created_by.get_full_name().strip() or task.created_by.email,
-                    "assigned_to_id": task.assigned_to_id,
-                    "assigned_to_name": (
-                        (task.assigned_to.get_full_name().strip() or task.assigned_to.email) if task.assigned_to else None
-                    ),
-                    "total_time_spent_seconds": task.total_time_spent_seconds,
-                }
-                for task in tasks_qs.order_by("-updated_at")
-            ],
-        }
+        data = build_admin_overview_payload(project_id=project_id, milestone_id=milestone_id, task_id=task_id)
         return api_response(True, "Admin overview fetched.", status.HTTP_200_OK, data)
 
 
@@ -685,6 +964,69 @@ class AdminPasswordResetAPIView(APIView):
         target_user.set_password(new_password)
         target_user.save(update_fields=["password"])
         return api_response(True, "Password updated successfully.", status.HTTP_200_OK, {"email": target_user.email})
+
+
+@extend_schema(tags=["Common APIs"])
+class AdminForgotPasswordRequestOTPAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(request=AdminForgotPasswordRequestSerializer, responses={200: OpenApiTypes.OBJECT})
+    def post(self, request):
+        serializer = AdminForgotPasswordRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"].lower().strip()
+        matched_user = User.objects.filter(email__iexact=email).first()
+        if not matched_user:
+            return api_response(False, "User with this email was not found.", status.HTTP_404_NOT_FOUND)
+
+        role = getattr(getattr(matched_user, "profile", None), "role", None)
+        if role != UserProfile.Roles.ADMIN:
+            return api_response(False, "Forgot password is allowed only for admin users.", status.HTTP_403_FORBIDDEN)
+
+        admin_user = User.objects.filter(
+            id=matched_user.id,
+            profile__status=UserProfile.Status.ACTIVE,
+        ).first()
+        if not admin_user:
+            return api_response(False, "Admin account is inactive.", status.HTTP_403_FORBIDDEN)
+
+        otp = f"{secrets.randbelow(10**6):06d}"
+        cache.set(admin_otp_cache_key(email), otp, timeout=ADMIN_RESET_OTP_TTL_SECONDS)
+        send_admin_reset_otp_email(admin_user, otp)
+
+        return api_response(True, "Admin OTP sent successfully.", status.HTTP_200_OK, {"email": email})
+
+
+@extend_schema(tags=["Common APIs"])
+class AdminForgotPasswordVerifyOTPAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(request=AdminForgotPasswordVerifySerializer, responses={200: OpenApiTypes.OBJECT})
+    def post(self, request):
+        serializer = AdminForgotPasswordVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"].lower().strip()
+        otp = serializer.validated_data["otp"]
+        new_password = serializer.validated_data["new_password"]
+
+        admin_user = User.objects.filter(
+            email__iexact=email,
+            profile__role=UserProfile.Roles.ADMIN,
+            profile__status=UserProfile.Status.ACTIVE,
+        ).first()
+        if not admin_user:
+            return api_response(False, "Invalid email or OTP.", status.HTTP_400_BAD_REQUEST)
+
+        cached_otp = cache.get(admin_otp_cache_key(email))
+        if not cached_otp or cached_otp != otp:
+            return api_response(False, "Invalid or expired OTP.", status.HTTP_400_BAD_REQUEST)
+
+        admin_user.set_password(new_password)
+        admin_user.save(update_fields=["password"])
+        cache.delete(admin_otp_cache_key(email))
+        return api_response(True, "Admin password reset successful.", status.HTTP_200_OK, {"email": admin_user.email})
 
 
 #my tasks api view

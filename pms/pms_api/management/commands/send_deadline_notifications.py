@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import time, timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -6,7 +6,7 @@ from django.core.management.base import BaseCommand
 from django.core.mail import send_mail
 from django.utils import timezone
 
-from pms_api.models import Milestone, Project, Task, UserProfile
+from pms_api.models import Milestone, Project, Task, TimeLog, UserProfile
 
 
 User = get_user_model()
@@ -19,6 +19,7 @@ class Command(BaseCommand):
         today = timezone.localdate()
         tomorrow = today + timedelta(days=1)
 
+        self._auto_stop_active_timers_at_8pm()
         self._send_project_deadline_alerts(today, tomorrow)
         self._send_milestone_overdue_alerts(today)
         self._send_task_overdue_alerts(today)
@@ -35,6 +36,39 @@ class Command(BaseCommand):
             recipient_list=list(set(recipients)),
             fail_silently=False,
         )
+
+    def _auto_stop_active_timers_at_8pm(self):
+        now_local = timezone.localtime()
+        if now_local.time() < time(hour=20, minute=0):
+            return
+
+        active_logs = TimeLog.objects.select_related("task", "user").filter(end_time__isnull=True)
+        if not active_logs.exists():
+            return
+
+        stopped_by_user = {}
+        for log in active_logs:
+            log.stop(source=TimeLog.Source.AUTO_STOP_8PM)
+            user_email = getattr(log.user, "email", None)
+            if not user_email:
+                continue
+            stopped_by_user.setdefault(user_email, {"name": log.user.first_name or log.user.username, "tasks": []})
+            stopped_by_user[user_email]["tasks"].append(log.task.title)
+
+        for email, payload in stopped_by_user.items():
+            task_lines = "\n".join(f"- {title}" for title in payload["tasks"]) or "- N/A"
+            self._send_email(
+                subject="PMS Timer Auto-stopped at 8:00 PM",
+                message=(
+                    f"Hi {payload['name']},\n\n"
+                    "You had active task timer(s) after 8:00 PM, so PMS auto-stopped them.\n\n"
+                    "Auto-stopped tasks:\n"
+                    f"{task_lines}\n\n"
+                    "Please remember to stop your timer when work is finished.\n\n"
+                    "Regards,\nPMS Team"
+                ),
+                recipients=[email],
+            )
 
     def _send_project_deadline_alerts(self, today, tomorrow):
         admins_and_bas = User.objects.filter(
