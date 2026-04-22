@@ -3,7 +3,7 @@ services:
     build: .
     container_name: pms-web
     ports:
-      - "8000:8000"
+      - "${APP_PORT:-6009}:8000"
     env_file:
       - .env
     volumes:

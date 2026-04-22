@@ -217,7 +217,7 @@ Body (full):
 ```
 Notes:
 - `password` is optional in update.
-- If Admin sends `password`, user password is updated and an email is sent to that user with the new temporary password.
+- If Admin sends `password`, user password is updated and an email is sent to that user with the new password.
 
 ### PATCH `/users/{id}/`
 Body (partial):

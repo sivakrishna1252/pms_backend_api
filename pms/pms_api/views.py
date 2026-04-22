@@ -319,7 +319,7 @@ def send_user_password_changed_email(user, raw_password):
         f"Hi {user.first_name or user.username},\n\n"
         "Your Project Management System password was changed by Admin.\n\n"
         f"Login Email: {user.email}\n"
-        f"New Temporary Password: {raw_password}\n\n"
+        f"New Password: {raw_password}\n\n"
         "Please login for this credentials.\n\n"
         "Regards,\nPMS Team"
     )
