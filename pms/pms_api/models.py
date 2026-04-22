@@ -180,6 +180,8 @@ class Notification(TimeStampedModel):
 
 #file attachments table
 class FileAttachment(TimeStampedModel):
+    project = models.ForeignKey(Project, on_delete=models.SET_NULL, related_name="files", null=True, blank=True)
+    milestone = models.ForeignKey(Milestone, on_delete=models.SET_NULL, related_name="files", null=True, blank=True)
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="files", null=True, blank=True)
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="uploaded_files"

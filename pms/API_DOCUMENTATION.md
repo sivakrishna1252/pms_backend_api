@@ -210,16 +210,21 @@ Body (full):
   "first_name": "Ravi",
   "last_name": "K",
   "email": "ravi@apparatus.solutions",
+  "password": "NewTemp@123",
   "role": "EMPLOYEE",
   "status": "ACTIVE"
 }
 ```
+Notes:
+- `password` is optional in update.
+- If Admin sends `password`, user password is updated and an email is sent to that user with the new temporary password.
 
 ### PATCH `/users/{id}/`
 Body (partial):
 ```json
 {
-  "first_name": "Ravi Updated"
+  "first_name": "Ravi Updated",
+  "password": "NewTemp@123"
 }
 ```
 
@@ -257,7 +262,7 @@ Pagination query params:
 ### GET `/projects/{id}/`
 
 ### PATCH `/projects/{id}/`
-> Note: `deadline` cannot be modified once created.
+> Note: only Admin can modify `deadline`. BA cannot change project deadline.
 
 Body:
 ```json
@@ -316,7 +321,7 @@ Milestone numbering behavior:
 ### GET `/milestones/{id}/`
 
 ### PATCH `/milestones/{id}/`
-> Note: `end_date` cannot be modified once created.
+> Note: `end_date` can be modified only by the user who created that milestone.
 
 Body:
 ```json
@@ -346,6 +351,10 @@ Body:
   "deadline": "2026-04-25"
 }
 ```
+Assignment rules:
+- Admin can assign task directly to BA or Employee using `assigned_to`.
+- BA can assign task only to Employee.
+- For BA, selected `project`/`milestone` must be BA-owned or Admin-owned, and milestone must belong to selected project.
 
 ### GET `/tasks/`
 Pagination query params:
@@ -372,6 +381,9 @@ Body:
   "user_id": 3
 }
 ```
+Assignment rules:
+- Admin can assign/reassign to BA or Employee.
+- BA can assign/reassign only to Employee.
 
 ### PATCH `/tasks/{id}/status`
 Body:
@@ -429,15 +441,21 @@ Use this endpoint to check worked time history per task.
 ## 7) File APIs
 
 ### POST `/files/`
+Access:
+- Admin, BA only
+
 Content-Type:
 - `multipart/form-data`
 
 Form-data fields:
+- `project` (optional, integer)
+- `milestone` (optional, integer)
 - `task` (optional, integer)
 - `file` (required, file)
 
 Important:
 - `file` must be an actual uploaded binary file. Sending a JSON string/path/URL is invalid.
+- Provide exactly one purpose field: `project` or `milestone` or `task`.
 - Response includes file `id`; keep it for `GET /files/{id}/` or `DELETE /files/{id}/`.
 
 ### GET `/files/`
@@ -555,7 +573,7 @@ Each dashboard response is role-based and returned in:
 - Email must end with `@apparatus.solutions`
 - Protected APIs require `Authorization: Bearer <access_token>`
 - Only assigned employee can start/pause/stop their task
-- Project `deadline` is immutable after create
+- Only Admin can modify project `deadline`
 - Milestone `end_date` is immutable after create
 - User creation triggers an email with login credentials to that user
 - Task completion triggers an email to task creator (BA/Admin)

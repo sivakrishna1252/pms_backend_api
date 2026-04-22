@@ -11,6 +11,7 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
@@ -30,12 +31,14 @@ from .serializers import (
     DeadlineChangeRequestSerializer,
     DeleteRequestSerializer,
     FileAttachmentSerializer,
+    FileUploadRequestSerializer,
     MilestoneSerializer,
     NotificationSerializer,
     ProjectSerializer,
     TaskSerializer,
     TimeLogSerializer,
     UserCreateSerializer,
+    UserUpdateSerializer,
     UserSerializer,
 )
 
@@ -294,7 +297,7 @@ def send_user_welcome_email(user, raw_password):
         "Your Project Management System account has been created.\n\n"
         f"Login Email: {user.email}\n"
         f"Temporary Password: {raw_password}\n\n"
-        "Please login to PMS dashboard and change your password after first login.\n\n"
+        "Please login to PMS dashboard \n\n"
         "Regards,\nPMS Team"
     )
     try:
@@ -307,6 +310,29 @@ def send_user_welcome_email(user, raw_password):
         )
     except Exception:
         logger.exception("Failed to send welcome email to %s", user.email)
+
+def send_user_password_changed_email(user, raw_password):
+    if not user.email:
+        return
+    subject = "Your PMS password has been updated"
+    message = (
+        f"Hi {user.first_name or user.username},\n\n"
+        "Your Project Management System password was changed by Admin.\n\n"
+        f"Login Email: {user.email}\n"
+        f"New Temporary Password: {raw_password}\n\n"
+        "Please login for this credentials.\n\n"
+        "Regards,\nPMS Team"
+    )
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+    except Exception:
+        logger.exception("Failed to send password change email to %s", user.email)
 
 
 def send_task_completed_email(task, completed_by):
@@ -444,6 +470,8 @@ class UserViewSet(viewsets.ModelViewSet):
     def get_serializer_class(self):
         if self.action == "create":
             return UserCreateSerializer
+        if self.action in {"update", "partial_update"}:
+            return UserUpdateSerializer
         return UserSerializer
 
     def create(self, request, *args, **kwargs):
@@ -454,6 +482,21 @@ class UserViewSet(viewsets.ModelViewSet):
         if raw_password:
             send_user_welcome_email(user, raw_password)
         return api_response(True, "User created successfully.", status.HTTP_201_CREATED, UserSerializer(user).data)
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        raw_password = serializer.validated_data.get("password")
+        if raw_password:
+            send_user_password_changed_email(user, raw_password)
+        return api_response(True, "User updated successfully.", status.HTTP_200_OK, UserSerializer(user).data)
+
+    def partial_update(self, request, *args, **kwargs):
+        kwargs["partial"] = True
+        return self.update(request, *args, **kwargs)
 
 
 
@@ -485,6 +528,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, *args, **kwargs):
         return super().partial_update(request, *args, **kwargs)
 
+    @extend_schema(request=DeadlineChangeRequestSerializer, responses={200: OpenApiTypes.OBJECT})
     @action(detail=True, methods=["post"], url_path="request-deadline-change")
     def request_deadline_change(self, request, pk=None):
         project = self.get_object()
@@ -525,6 +569,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             {"project_id": project.id, "new_deadline": new_deadline, "reason": reason},
         )
 
+    @extend_schema(request=DeleteRequestSerializer, responses={200: OpenApiTypes.OBJECT})
     @action(detail=True, methods=["post"], url_path="request-delete")
     def request_delete(self, request, pk=None):
         project = self.get_object()
@@ -620,7 +665,53 @@ class TaskViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated(), IsAdminOrBA()]
         return [IsAuthenticated()]
 
+    def _allowed_assignee_roles(self):
+        actor_role = user_role(self.request.user)
+        if actor_role == UserProfile.Roles.ADMIN:
+            return {UserProfile.Roles.BA, UserProfile.Roles.EMPLOYEE}
+        if actor_role == UserProfile.Roles.BA:
+            return {UserProfile.Roles.EMPLOYEE}
+        return set()
+
+    def _validate_assignee(self, assignee):
+        if assignee is None:
+            return
+        assignee_role = user_role(assignee)
+        if assignee_role not in self._allowed_assignee_roles():
+            raise PermissionDenied("You are not allowed to assign this task to the selected user.")
+        assignee_profile = getattr(assignee, "profile", None)
+        if not assignee_profile or assignee_profile.status != UserProfile.Status.ACTIVE:
+            raise ValidationError({"assigned_to": "Assigned user must be active."})
+
+    def _validate_project_milestone_scope(self, project, milestone):
+        actor = self.request.user
+        actor_role = user_role(actor)
+
+        # Always ensure milestone belongs to the selected project.
+        if milestone and milestone.project_id != project.id:
+            raise ValidationError({"milestone": "Selected milestone does not belong to the selected project."})
+
+        # BA can work only on Admin-created or self-created project/milestone scope.
+        if actor_role == UserProfile.Roles.BA:
+            allowed_creator_ids = [actor.id]
+            admin_ids = list(
+                User.objects.filter(
+                    profile__role=UserProfile.Roles.ADMIN,
+                    profile__status=UserProfile.Status.ACTIVE,
+                ).values_list("id", flat=True)
+            )
+            allowed_creator_ids.extend(admin_ids)
+
+            if project.created_by_id not in allowed_creator_ids:
+                raise PermissionDenied("BA can create tasks only in Admin-created or own projects.")
+            if milestone and milestone.created_by_id not in allowed_creator_ids:
+                raise PermissionDenied("BA can use milestones created by Admin or by self only.")
+
     def perform_create(self, serializer):
+        project = serializer.validated_data.get("project")
+        milestone = serializer.validated_data.get("milestone")
+        self._validate_project_milestone_scope(project, milestone)
+        self._validate_assignee(serializer.validated_data.get("assigned_to"))
         task = serializer.save(created_by=self.request.user)
         if task.assigned_to and task.assigned_to.email:
             Notification.objects.create(
@@ -636,6 +727,25 @@ class TaskViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         return super().create(request, *args, **kwargs)
 
+    def perform_update(self, serializer):
+        previous_assignee_id = getattr(serializer.instance, "assigned_to_id", None)
+        project = serializer.validated_data.get("project", serializer.instance.project)
+        milestone = serializer.validated_data.get("milestone", serializer.instance.milestone)
+        self._validate_project_milestone_scope(project, milestone)
+        assignee = serializer.validated_data.get("assigned_to", serializer.instance.assigned_to)
+        self._validate_assignee(assignee)
+        task = serializer.save()
+        if assignee and assignee.email and assignee.id != previous_assignee_id:
+            Notification.objects.create(
+                user=assignee,
+                type="TASK_ASSIGNED",
+                title="Task Assigned/Updated",
+                message=f"Task '{task.title}' is assigned to you.",
+                ref_type=Notification.RefType.TASK,
+                ref_id=task.id,
+            )
+            send_task_assignment_email(assignee, task)
+
     def update(self, request, *args, **kwargs):
         return super().update(request, *args, **kwargs)
 
@@ -646,27 +756,28 @@ class TaskViewSet(viewsets.ModelViewSet):
     def assign(self, request, pk=None):
         task = self.get_object()
         user_id = request.data.get("user_id")
-        employee = User.objects.filter(
-            id=user_id, profile__role=UserProfile.Roles.EMPLOYEE, profile__status=UserProfile.Status.ACTIVE
+        allowed_roles = self._allowed_assignee_roles()
+        assignee = User.objects.filter(
+            id=user_id, profile__role__in=allowed_roles, profile__status=UserProfile.Status.ACTIVE
         ).first()
-        if not employee:
-            return api_response(False, "Employee not found.", status.HTTP_400_BAD_REQUEST)
-        task.assigned_to = employee
+        if not assignee:
+            return api_response(False, "Assignee not found or not allowed.", status.HTTP_400_BAD_REQUEST)
+        task.assigned_to = assignee
         task.save(update_fields=["assigned_to"])
         Notification.objects.create(
-            user=employee,
+            user=assignee,
             type="TASK_ASSIGNED",
             title="New Task Assigned",
             message=f"Task '{task.title}' was assigned to you.",
             ref_type=Notification.RefType.TASK,
             ref_id=task.id,
         )
-        send_task_assignment_email(employee, task)
+        send_task_assignment_email(assignee, task)
         return api_response(
             True,
             "Task assigned successfully.",
             status.HTTP_200_OK,
-            {"task_id": task.id, "task_name": task.title, "assigned_id": employee.id, "emp_name": employee.first_name},
+            {"task_id": task.id, "task_name": task.title, "assigned_id": assignee.id, "emp_name": assignee.first_name},
         )
 
     @action(detail=True, methods=["post"])
@@ -739,6 +850,7 @@ class TaskViewSet(viewsets.ModelViewSet):
             True, "Task status updated.", status.HTTP_200_OK, {"task_id": task.id, "task_name": task.title, "status": task.status}
         )
 
+    @extend_schema(request=DeadlineChangeRequestSerializer, responses={200: OpenApiTypes.OBJECT})
     @action(detail=True, methods=["post"], url_path="request-deadline-change")
     def request_deadline_change(self, request, pk=None):
         task = self.get_object()
@@ -786,14 +898,26 @@ class TaskViewSet(viewsets.ModelViewSet):
 #file attachment view set pagination
 @extend_schema(tags=["Common APIs"])
 class FileAttachmentViewSet(viewsets.ModelViewSet):
-    queryset = FileAttachment.objects.select_related("uploaded_by").all().order_by("-created_at")
+    queryset = FileAttachment.objects.select_related("uploaded_by", "project", "milestone", "task").all().order_by("-created_at")
     serializer_class = FileAttachmentSerializer
     pagination_class = StandardResultsSetPagination
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
+    def get_permissions(self):
+        if self.action in {"create", "update", "partial_update", "destroy"}:
+            return [IsAuthenticated(), IsAdminOrBA()]
+        return [IsAuthenticated()]
+
+    @extend_schema(request=FileUploadRequestSerializer, responses={201: FileAttachmentSerializer})
     def create(self, request, *args, **kwargs):
-        return super().create(request, *args, **kwargs)
+        request_serializer = FileUploadRequestSerializer(data=request.data)
+        request_serializer.is_valid(raise_exception=True)
+        payload = request_serializer.validated_data
+        model_serializer = self.get_serializer(data=payload)
+        model_serializer.is_valid(raise_exception=True)
+        self.perform_create(model_serializer)
+        return api_response(True, "File uploaded successfully.", status.HTTP_201_CREATED, model_serializer.data)
 
     def perform_create(self, serializer):
         upload = self.request.FILES.get("file")

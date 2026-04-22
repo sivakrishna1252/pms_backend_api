@@ -97,6 +97,54 @@ class UserCreateSerializer(serializers.ModelSerializer):
         return user
 
 
+class UserUpdateSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, min_length=6, required=False, allow_blank=False)
+    role = serializers.ChoiceField(choices=UserProfile.Roles.choices, required=False)
+    status = serializers.ChoiceField(choices=UserProfile.Status.choices, required=False)
+
+    class Meta:
+        model = User
+        fields = ["id", "first_name", "last_name", "email", "password", "role", "status"]
+        read_only_fields = ["id"]
+
+    def validate_email(self, value):
+        allowed_domain = getattr(settings, "ALLOWED_OFFICE_EMAIL_DOMAIN", "@apparatus.solutions")
+        if not value.lower().endswith(allowed_domain):
+            raise serializers.ValidationError(f"Only office email domain ({allowed_domain}) is allowed.")
+        existing_user = User.objects.filter(username__iexact=value).exclude(id=self.instance.id).first()
+        if existing_user:
+            raise serializers.ValidationError("This email is already registered. Use a different email.")
+        return value
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop("password", None)
+        role = validated_data.pop("role", None)
+        profile_status = validated_data.pop("status", None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        if "email" in validated_data:
+            instance.username = validated_data["email"]
+        instance.save()
+
+        profile, _ = UserProfile.objects.get_or_create(user=instance)
+        profile_changed_fields = []
+        if role is not None:
+            profile.role = role
+            profile_changed_fields.append("role")
+        if profile_status is not None:
+            profile.status = profile_status
+            profile_changed_fields.append("status")
+        if profile_changed_fields:
+            profile.save(update_fields=profile_changed_fields)
+
+        if password:
+            instance.set_password(password)
+            instance.save(update_fields=["password"])
+
+        return instance
+
+
 
 #project serializer
 class ProjectSerializer(serializers.ModelSerializer):
@@ -125,7 +173,10 @@ class ProjectSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         if self.instance and "deadline" in attrs and attrs["deadline"] != self.instance.deadline:
-            raise serializers.ValidationError({"deadline": "Project deadline cannot be modified once created."})
+            request = self.context.get("request")
+            role = getattr(getattr(getattr(request, "user", None), "profile", None), "role", None)
+            if role != UserProfile.Roles.ADMIN:
+                raise serializers.ValidationError({"deadline": "Only Admin can modify project deadline."})
         return attrs
 
 
@@ -162,7 +213,9 @@ class MilestoneSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         if self.instance and "end_date" in attrs and attrs["end_date"] != self.instance.end_date:
-            raise serializers.ValidationError({"end_date": "Milestone end_date cannot be modified once created."})
+            request = self.context.get("request")
+            if not request or request.user.id != self.instance.created_by_id:
+                raise serializers.ValidationError({"end_date": "Only milestone creator can modify end_date."})
         return attrs
 
 
@@ -244,6 +297,18 @@ class FileAttachmentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Upload a valid file using multipart/form-data.")
         return value
 
+    def validate(self, attrs):
+        project = attrs.get("project", getattr(self.instance, "project", None))
+        milestone = attrs.get("milestone", getattr(self.instance, "milestone", None))
+        task = attrs.get("task", getattr(self.instance, "task", None))
+
+        linked_count = sum(1 for item in [project, milestone, task] if item is not None)
+        if linked_count != 1:
+            raise serializers.ValidationError(
+                "Upload must be linked to exactly one purpose: project or milestone or task."
+            )
+        return attrs
+
 
 class AssignTaskSerializer(serializers.Serializer):
     user_id = serializers.IntegerField()
@@ -258,8 +323,18 @@ class EmptySerializer(serializers.Serializer):
 
 
 class FileUploadRequestSerializer(serializers.Serializer):
+    project = serializers.IntegerField(required=False, allow_null=True)
+    milestone = serializers.IntegerField(required=False, allow_null=True)
     task = serializers.IntegerField(required=False, allow_null=True)
     file = serializers.FileField()
+
+    def validate(self, attrs):
+        linked_count = sum(1 for key in ["project", "milestone", "task"] if attrs.get(key) is not None)
+        if linked_count != 1:
+            raise serializers.ValidationError(
+                "Provide exactly one link field: project or milestone or task."
+            )
+        return attrs
 
 
 

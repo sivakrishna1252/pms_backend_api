@@ -146,6 +146,8 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Role-based APIs for Admin, BA, Employee and common flows.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    # Split request/response components so FileField is rendered as binary for uploads.
+    "COMPONENT_SPLIT_REQUEST": True,
     "TAGS": [
         {"name": "Common APIs", "description": "Authentication and shared APIs."},
         {"name": "Admin APIs", "description": "Admin-only management APIs."},
