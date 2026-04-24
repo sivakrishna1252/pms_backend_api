@@ -296,7 +296,7 @@ def send_user_welcome_email(user, raw_password):
         f"Hi {user.first_name or user.username},\n\n"
         "Your Project Management System account has been created.\n\n"
         f"Login Email: {user.email}\n"
-        f"Temporary Password: {raw_password}\n\n"
+        f"Password: {raw_password}\n\n"
         "Please login to PMS dashboard \n\n"
         "Regards,\nPMS Team"
     )
@@ -908,6 +908,23 @@ class FileAttachmentViewSet(viewsets.ModelViewSet):
         if self.action in {"create", "update", "partial_update", "destroy"}:
             return [IsAuthenticated(), IsAdminOrBA()]
         return [IsAuthenticated()]
+
+    def get_queryset(self):
+        base_qs = (
+            FileAttachment.objects.select_related("uploaded_by", "project", "milestone", "task")
+            .all()
+            .order_by("-created_at")
+        )
+        role = user_role(self.request.user)
+        if role == UserProfile.Roles.EMPLOYEE:
+            # Employee can view docs linked to their assigned tasks,
+            # including project-level and milestone-level docs in the same scope.
+            return base_qs.filter(
+                Q(task__assigned_to=self.request.user)
+                | Q(milestone__tasks__assigned_to=self.request.user)
+                | Q(project__tasks__assigned_to=self.request.user)
+            ).distinct()
+        return base_qs
 
     @extend_schema(request=FileUploadRequestSerializer, responses={201: FileAttachmentSerializer})
     def create(self, request, *args, **kwargs):

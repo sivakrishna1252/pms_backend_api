@@ -3,6 +3,7 @@ from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.db import IntegrityError
 from django.core.files.uploadedfile import UploadedFile
+from pathlib import Path
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -286,15 +287,53 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 #file attachment serializer
 class FileAttachmentSerializer(serializers.ModelSerializer):
+    ALLOWED_FILE_EXTENSIONS = {".doc", ".docx", ".md"}
+
+    project_name = serializers.SerializerMethodField(read_only=True)
+    milestone_name = serializers.SerializerMethodField(read_only=True)
+    task_name = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = FileAttachment
-        fields = "__all__"
+        fields = [
+            "id",
+            "project",
+            "project_name",
+            "milestone",
+            "milestone_name",
+            "task",
+            "task_name",
+            "file",
+            "uploaded_by",
+            "mime_type",
+            "size_bytes",
+            "created_at",
+            "updated_at",
+        ]
         read_only_fields = ["id", "uploaded_by", "mime_type", "size_bytes", "created_at", "updated_at"]
+
+    def get_project_name(self, obj):
+        if obj.project_id:
+            return obj.project.name
+        return ""
+
+    def get_milestone_name(self, obj):
+        if obj.milestone_id:
+            return obj.milestone.name
+        return ""
+
+    def get_task_name(self, obj):
+        if obj.task_id:
+            return obj.task.title
+        return ""
 
     def validate_file(self, value):
         # Reject plain strings/URLs and enforce multipart binary uploads.
         if not isinstance(value, UploadedFile):
             raise serializers.ValidationError("Upload a valid file using multipart/form-data.")
+        extension = Path(value.name or "").suffix.lower()
+        if extension not in self.ALLOWED_FILE_EXTENSIONS:
+            raise serializers.ValidationError("Only .doc, .docx, and .md files are allowed.")
         return value
 
     def validate(self, attrs):
