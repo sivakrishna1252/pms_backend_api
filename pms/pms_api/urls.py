@@ -16,6 +16,7 @@ from .views import (
     ProjectViewSet,
     RefreshAPIView,
     TaskViewSet,
+    WorkTrackingAPIView,
     UserViewSet,
 )
 
@@ -36,6 +37,7 @@ urlpatterns = [
     path("my/tasks", MyTasksAPIView.as_view(), name="my-tasks"),
     path("admin/dashboard", DashboardAPIView.as_view(), name="admin-dashboard"),
     path("admin/overview", AdminOverviewAPIView.as_view(), name="admin-overview"),
+    path("work-tracking", WorkTrackingAPIView.as_view(), name="work-tracking"),
     path("admin/reset-password", AdminPasswordResetAPIView.as_view(), name="admin-reset-password"),
     path("ba/dashboard", DashboardAPIView.as_view(), name="ba-dashboard"),
     path("employee/dashboard", DashboardAPIView.as_view(), name="employee-dashboard"),

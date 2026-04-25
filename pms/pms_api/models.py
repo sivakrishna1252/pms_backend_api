@@ -5,6 +5,18 @@ from django.db.models import Max
 from django.utils import timezone
 
 
+def humanize_duration(seconds):
+    total_seconds = max(int(seconds or 0), 0)
+    if total_seconds < 60:
+        return f"{total_seconds} sec"
+    if total_seconds < 3600:
+        minutes, rem_seconds = divmod(total_seconds, 60)
+        return f"{minutes} min" + (f" {rem_seconds} sec" if rem_seconds else "")
+    hours, rem = divmod(total_seconds, 3600)
+    minutes = rem // 60
+    return f"{hours} hr" + (f" {minutes} min" if minutes else "")
+
+
 class TimeStampedModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -127,6 +139,10 @@ class Task(TimeStampedModel):
     def __str__(self):
         return self.title
 
+    @property
+    def total_time_spent_display(self):
+        return humanize_duration(self.total_time_spent_seconds)
+
 
 
 
@@ -147,6 +163,10 @@ class TimeLog(TimeStampedModel):
     @property
     def is_active(self):
         return self.end_time is None
+
+    @property
+    def duration_display(self):
+        return humanize_duration(self.duration_seconds)
 
     def stop(self, source=Source.MANUAL_STOP):
         if self.end_time:

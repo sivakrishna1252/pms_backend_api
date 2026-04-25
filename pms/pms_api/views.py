@@ -19,7 +19,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 
 
-from .models import FileAttachment, Milestone, Notification, Project, Task, TimeLog, UserProfile
+from .models import FileAttachment, Milestone, Notification, Project, Task, TimeLog, UserProfile, humanize_duration
 from .pagination import StandardResultsSetPagination
 from .permissions import IsAdmin, IsAdminOrBA, user_role
 from .serializers import (
@@ -166,6 +166,7 @@ def build_admin_overview_payload(project_id=None, milestone_id=None, task_id=Non
             "in_progress_tasks": row["in_progress_tasks_count"],
             "blocked_tasks": row["blocked_tasks_count"],
             "total_time_spent_seconds": row["total_time_spent_seconds"],
+            "total_time_spent_display": humanize_duration(row["total_time_spent_seconds"]),
             "active_timers": row["active_timers_count"],
         }
         for row in employee_rows
@@ -233,6 +234,7 @@ def build_admin_overview_payload(project_id=None, milestone_id=None, task_id=Non
                     (task.assigned_to.get_full_name().strip() or task.assigned_to.email) if task.assigned_to else None
                 ),
                 "total_time_spent_seconds": task.total_time_spent_seconds,
+                "total_time_spent_display": humanize_duration(task.total_time_spent_seconds),
             }
             for task in tasks_qs.order_by("-updated_at")
         ],
@@ -818,7 +820,9 @@ class TaskViewSet(viewsets.ModelViewSet):
                 "task_id": task.id,
                 "end_time": log.end_time,
                 "duration_seconds": log.duration_seconds,
+                "duration_display": humanize_duration(log.duration_seconds),
                 "total_time_spent_seconds": task.total_time_spent_seconds,
+                "total_time_spent_display": humanize_duration(task.total_time_spent_seconds),
             },
         )
 
@@ -969,8 +973,6 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 
-
-
 #dashboard api view
 @extend_schema(tags=["Common APIs"])
 class DashboardAPIView(APIView):
@@ -1044,6 +1046,7 @@ class DashboardAPIView(APIView):
                                 "milestone_name": task.milestone.name if task.milestone else None,
                                 "deadline": task.deadline,
                                 "total_time_spent_seconds": task.total_time_spent_seconds,
+                                "total_time_spent_display": humanize_duration(task.total_time_spent_seconds),
                             }
                             for task in tasks_for_employee
                         ],
@@ -1067,10 +1070,119 @@ class DashboardAPIView(APIView):
             "active_task": Task.objects.filter(assigned_to=user, status=Task.Status.IN_PROGRESS).values("id", "title").first(),
             "completed_tasks": Task.objects.filter(assigned_to=user, status=Task.Status.COMPLETED).count(),
         }
+        data["today_worked_display"] = humanize_duration(data["today_worked_seconds"])
         return api_response(True, "Employee dashboard fetched.", status.HTTP_200_OK, data)
 
 
 
+
+
+@extend_schema(tags=["BA/Admin APIs"])
+class WorkTrackingAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: OpenApiTypes.OBJECT})
+    def get(self, request):
+        role = user_role(request.user)
+        if role not in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
+            return api_response(False, "Only Admin or BA can access work tracking.", status.HTTP_403_FORBIDDEN)
+
+        tasks_qs = (
+            Task.objects.select_related("project", "milestone", "assigned_to", "created_by")
+            .filter(assigned_to__isnull=False)
+            .order_by("-updated_at")
+        )
+        if role == UserProfile.Roles.BA:
+            tasks_qs = tasks_qs.filter(created_by=request.user)
+
+        employee_id = request.query_params.get("employee_id")
+        project_id = request.query_params.get("project_id")
+        milestone_id = request.query_params.get("milestone_id")
+        task_id = request.query_params.get("task_id")
+        status_filter = request.query_params.get("status")
+        only_active = request.query_params.get("only_active")
+
+        if employee_id:
+            tasks_qs = tasks_qs.filter(assigned_to_id=employee_id)
+        if project_id:
+            tasks_qs = tasks_qs.filter(project_id=project_id)
+        if milestone_id:
+            tasks_qs = tasks_qs.filter(milestone_id=milestone_id)
+        if task_id:
+            tasks_qs = tasks_qs.filter(id=task_id)
+        if status_filter:
+            tasks_qs = tasks_qs.filter(status=status_filter)
+
+        now = timezone.now()
+        today = timezone.localdate()
+        records = []
+        for task in tasks_qs:
+            active_log = TimeLog.objects.filter(task=task, end_time__isnull=True).order_by("-start_time").first()
+            if active_log:
+                timer_state = "STARTED"
+            elif task.status == Task.Status.PAUSED:
+                timer_state = "PAUSED"
+            else:
+                timer_state = "STOPPED"
+
+            if only_active and only_active.lower() == "true" and timer_state != "STARTED":
+                continue
+
+            todays_logs = TimeLog.objects.filter(task=task, user=task.assigned_to, start_time__date=today)
+            today_worked_seconds = sum(todays_logs.values_list("duration_seconds", flat=True))
+            current_session_seconds = 0
+            if active_log:
+                current_session_seconds = int((now - active_log.start_time).total_seconds())
+                if active_log.start_time.date() == today:
+                    today_worked_seconds += current_session_seconds
+
+            last_completed_log = (
+                TimeLog.objects.filter(task=task, user=task.assigned_to, end_time__isnull=False).order_by("-end_time").first()
+            )
+
+            records.append(
+                {
+                    "employee_id": task.assigned_to_id,
+                    "employee_name": task.assigned_to.get_full_name().strip() or task.assigned_to.email,
+                    "employee_email": task.assigned_to.email,
+                    "project_id": task.project_id,
+                    "project_name": task.project.name,
+                    "milestone_id": task.milestone_id,
+                    "milestone_no": task.milestone.milestone_no if task.milestone else None,
+                    "milestone_name": task.milestone.name if task.milestone else None,
+                    "task_id": task.id,
+                    "task_title": task.title,
+                    "task_status": task.status,
+                    "timer_state": timer_state,
+                    "current_session_start_time": active_log.start_time if active_log else None,
+                    "current_session_seconds": current_session_seconds,
+                    "current_session_display": humanize_duration(current_session_seconds),
+                    "last_session_end_time": last_completed_log.end_time if last_completed_log else None,
+                    "today_worked_seconds": today_worked_seconds,
+                    "today_worked_display": humanize_duration(today_worked_seconds),
+                    "total_time_spent_seconds": task.total_time_spent_seconds,
+                    "total_time_spent_display": humanize_duration(task.total_time_spent_seconds),
+                }
+            )
+
+        data = {
+            "filters": {
+                "employee_id": employee_id,
+                "project_id": project_id,
+                "milestone_id": milestone_id,
+                "task_id": task_id,
+                "status": status_filter,
+                "only_active": only_active,
+            },
+            "summary": {
+                "records_count": len(records),
+                "started_count": len([item for item in records if item["timer_state"] == "STARTED"]),
+                "paused_count": len([item for item in records if item["timer_state"] == "PAUSED"]),
+                "stopped_count": len([item for item in records if item["timer_state"] == "STOPPED"]),
+            },
+            "work_tracking": records,
+        }
+        return api_response(True, "Work tracking fetched.", status.HTTP_200_OK, data)
 
 
 @extend_schema(tags=["Admin APIs"])

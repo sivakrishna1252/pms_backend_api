@@ -228,6 +228,7 @@ class TaskSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.SerializerMethodField(read_only=True)
     project_name = serializers.CharField(source="project.name", read_only=True)
     milestone_name = serializers.CharField(source="milestone.name", read_only=True)
+    total_time_spent_display = serializers.CharField(source="total_time_spent_display", read_only=True)
 
     class Meta:
         model = Task
@@ -247,6 +248,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "priority",
             "deadline",
             "total_time_spent_seconds",
+            "total_time_spent_display",
             "created_at",
             "updated_at",
         ]
@@ -267,6 +269,8 @@ class TaskSerializer(serializers.ModelSerializer):
 
 #time log serializer
 class TimeLogSerializer(serializers.ModelSerializer):
+    duration_display = serializers.CharField(source="duration_display", read_only=True)
+
     class Meta:
         model = TimeLog
         fields = "__all__"
@@ -374,8 +378,6 @@ class FileUploadRequestSerializer(serializers.Serializer):
                 "Provide exactly one link field: project or milestone or task."
             )
         return attrs
-
-
 
 
 #auth response serializer

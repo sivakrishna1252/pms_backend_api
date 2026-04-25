@@ -637,3 +637,84 @@ You can still send IDs in request body (`project`, `milestone`, `assigned_to`), 
 8. `POST /tasks/{id}/start/` -> `pause/` -> `stop/`
 9. `PATCH /tasks/{id}/status`
 10. Check `GET /notifications/` and dashboards
+11. `GET /work-tracking` (Admin/BA)
+
+---
+
+## 15) Work Tracking API (Admin/BA)
+
+### GET `/work-tracking`
+Headers:
+- `Authorization: Bearer <access_token>`
+
+Who can access:
+- `ADMIN`
+- `BA`
+
+Query params (all optional):
+- `employee_id`
+- `project_id`
+- `milestone_id`
+- `task_id`
+- `status`
+- `only_active=true` (returns only active started timers)
+
+What it returns:
+- Employee identity (`employee_id`, `employee_name`, `employee_email`)
+- Project / milestone / task details
+- Task status + timer state:
+  - `STARTED`
+  - `PAUSED`
+  - `STOPPED`
+- Time tracking fields:
+  - `current_session_start_time`
+  - `current_session_seconds`
+  - `last_session_end_time`
+  - `today_worked_seconds`
+  - `total_time_spent_seconds`
+
+Response (sample):
+```json
+{
+  "success": true,
+  "message": "Work tracking fetched.",
+  "code": 200,
+  "data": {
+    "filters": {
+      "employee_id": null,
+      "project_id": null,
+      "milestone_id": null,
+      "task_id": null,
+      "status": null,
+      "only_active": null
+    },
+    "summary": {
+      "records_count": 2,
+      "started_count": 1,
+      "paused_count": 1,
+      "stopped_count": 0
+    },
+    "work_tracking": [
+      {
+        "employee_id": 5,
+        "employee_name": "Ravi Kumar",
+        "employee_email": "ravi@apparatus.solutions",
+        "project_id": 3,
+        "project_name": "CRM Revamp",
+        "milestone_id": 11,
+        "milestone_no": 2,
+        "milestone_name": "Backend APIs",
+        "task_id": 28,
+        "task_title": "Build reporting endpoints",
+        "task_status": "IN_PROGRESS",
+        "timer_state": "STARTED",
+        "current_session_start_time": "2026-04-24T09:10:00Z",
+        "current_session_seconds": 420,
+        "last_session_end_time": "2026-04-24T08:30:00Z",
+        "today_worked_seconds": 5400,
+        "total_time_spent_seconds": 12800
+      }
+    ]
+  }
+}
+```

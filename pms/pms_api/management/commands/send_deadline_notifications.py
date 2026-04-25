@@ -70,6 +70,9 @@ class Command(BaseCommand):
                 recipients=[email],
             )
 
+
+
+
     def _send_project_deadline_alerts(self, today, tomorrow):
         admins_and_bas = User.objects.filter(
             profile__role__in=[UserProfile.Roles.ADMIN, UserProfile.Roles.BA],
