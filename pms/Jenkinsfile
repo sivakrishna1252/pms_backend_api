@@ -7,6 +7,7 @@ pipeline {
         IMAGE_NAME = "pms-backend"
         ENV_ID = "pms_backend_env"
         ENV_FILE = ".env"
+        ALLOWED_HOSTS_VALUE = "127.0.0.1,localhost,187.127.139.247"
         HOST_PORT = "6009"
         CONTAINER_PORT = "8000"
     }
@@ -45,7 +46,7 @@ pipeline {
             steps {
                 sh """
                     cd ${PROJECT_DIR}
-                    docker run --rm --env-file ${ENV_FILE} ${IMAGE_NAME}:${BUILD_NUMBER} python manage.py check
+                    docker run --rm --env-file ${ENV_FILE} -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" ${IMAGE_NAME}:${BUILD_NUMBER} python manage.py check
                 """
             }
         }
@@ -68,6 +69,7 @@ pipeline {
                       --name ${APP_NAME} \
                       --restart unless-stopped \
                       --env-file ${ENV_FILE} \
+                      -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" \
                       -p ${HOST_PORT}:${CONTAINER_PORT} \
                       ${IMAGE_NAME}:${BUILD_NUMBER}
                 """
