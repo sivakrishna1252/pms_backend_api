@@ -228,7 +228,7 @@ class TaskSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.SerializerMethodField(read_only=True)
     project_name = serializers.CharField(source="project.name", read_only=True)
     milestone_name = serializers.CharField(source="milestone.name", read_only=True)
-    total_time_spent_display = serializers.CharField(source="total_time_spent_display", read_only=True)
+    total_time_spent_display = serializers.CharField(read_only=True)
 
     class Meta:
         model = Task
@@ -269,7 +269,7 @@ class TaskSerializer(serializers.ModelSerializer):
 
 #time log serializer
 class TimeLogSerializer(serializers.ModelSerializer):
-    duration_display = serializers.CharField(source="duration_display", read_only=True)
+    duration_display = serializers.CharField(read_only=True)
 
     class Meta:
         model = TimeLog
