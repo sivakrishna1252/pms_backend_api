@@ -4,6 +4,7 @@ pipeline {
     environment {
         APP_NAME = "pms-web-prod"
         IMAGE_NAME = "pms-backend"
+        ENV_ID = "pms_backend_env"
         ENV_FILE = ".env"
         HOST_PORT = "6009"
         CONTAINER_PORT = "8000"
