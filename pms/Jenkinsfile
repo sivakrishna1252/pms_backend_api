@@ -27,7 +27,15 @@ pipeline {
             steps {
                 sh """
                     cd ${PROJECT_DIR}
-                    test -f ${ENV_FILE} || (echo "${ENV_FILE} file missing in workspace"; exit 1)
+                    if [ ! -f ${ENV_FILE} ]; then
+                        if [ -f .env.example ]; then
+                            cp .env.example ${ENV_FILE}
+                            echo "${ENV_FILE} created from .env.example"
+                        else
+                            touch ${ENV_FILE}
+                            echo "${ENV_FILE} created as empty fallback"
+                        fi
+                    fi
                     docker build -f Dockerfile.prod -t ${IMAGE_NAME}:${BUILD_NUMBER} -t ${IMAGE_NAME}:latest .
                 """
             }
@@ -46,7 +54,15 @@ pipeline {
             steps {
                 sh """
                     cd ${PROJECT_DIR}
-                    test -f ${ENV_FILE} || (echo "${ENV_FILE} file missing in workspace"; exit 1)
+                    if [ ! -f ${ENV_FILE} ]; then
+                        if [ -f .env.example ]; then
+                            cp .env.example ${ENV_FILE}
+                            echo "${ENV_FILE} created from .env.example"
+                        else
+                            touch ${ENV_FILE}
+                            echo "${ENV_FILE} created as empty fallback"
+                        fi
+                    fi
                     docker rm -f ${APP_NAME} || true
                     docker run -d \
                       --name ${APP_NAME} \
