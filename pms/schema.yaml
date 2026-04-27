@@ -1,0 +1,2393 @@
+openapi: 3.0.3
+info:
+  title: Project Management System API
+  version: 1.0.0
+  description: Role-based APIs for Admin, BA, Employee and common flows.
+paths:
+  /api/v1/admin/dashboard:
+    get:
+      operationId: api_v1_admin_dashboard_retrieve
+      tags:
+      - Common APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/admin/overview:
+    get:
+      operationId: api_v1_admin_overview_retrieve
+      tags:
+      - Admin APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/admin/reset-password:
+    post:
+      operationId: api_v1_admin_reset_password_create
+      tags:
+      - Admin APIs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminPasswordResetRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AdminPasswordResetRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AdminPasswordResetRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/auth/admin/forgot-password/request-otp:
+    post:
+      operationId: api_v1_auth_admin_forgot_password_request_otp_create
+      tags:
+      - Common APIs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminForgotPasswordRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AdminForgotPasswordRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AdminForgotPasswordRequestRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/auth/admin/forgot-password/verify-otp:
+    post:
+      operationId: api_v1_auth_admin_forgot_password_verify_otp_create
+      tags:
+      - Common APIs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminForgotPasswordVerifyRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AdminForgotPasswordVerifyRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AdminForgotPasswordVerifyRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/auth/login:
+    post:
+      operationId: api_v1_auth_login_create
+      tags:
+      - Common APIs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthLoginRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AuthLoginRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AuthLoginRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/auth/me:
+    get:
+      operationId: api_v1_auth_me_retrieve
+      tags:
+      - Common APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/auth/refresh:
+    post:
+      operationId: api_v1_auth_refresh_create
+      tags:
+      - Common APIs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: {}
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties: {}
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: {}
+      security:
+      - BearerAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/ba/dashboard:
+    get:
+      operationId: api_v1_ba_dashboard_retrieve
+      tags:
+      - Common APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/employee/dashboard:
+    get:
+      operationId: api_v1_employee_dashboard_retrieve
+      tags:
+      - Common APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/files/:
+    get:
+      operationId: api_v1_files_list
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      tags:
+      - Common APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedFileAttachmentList'
+          description: ''
+    post:
+      operationId: api_v1_files_create
+      tags:
+      - Common APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/FileUploadRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/FileUploadRequestRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileAttachment'
+          description: ''
+  /api/v1/files/{id}/:
+    get:
+      operationId: api_v1_files_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this file attachment.
+        required: true
+      tags:
+      - Common APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileAttachment'
+          description: ''
+    put:
+      operationId: api_v1_files_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this file attachment.
+        required: true
+      tags:
+      - Common APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/FileAttachmentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/FileAttachmentRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileAttachment'
+          description: ''
+    patch:
+      operationId: api_v1_files_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this file attachment.
+        required: true
+      tags:
+      - Common APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedFileAttachmentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedFileAttachmentRequest'
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileAttachment'
+          description: ''
+    delete:
+      operationId: api_v1_files_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this file attachment.
+        required: true
+      tags:
+      - Common APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/milestones/:
+    get:
+      operationId: api_v1_milestones_list
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      tags:
+      - BA/Admin APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedMilestoneList'
+          description: ''
+    post:
+      operationId: api_v1_milestones_create
+      tags:
+      - BA/Admin APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/MilestoneRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/MilestoneRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Milestone'
+          description: ''
+  /api/v1/milestones/{id}/:
+    get:
+      operationId: api_v1_milestones_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this milestone.
+        required: true
+      tags:
+      - BA/Admin APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Milestone'
+          description: ''
+    put:
+      operationId: api_v1_milestones_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this milestone.
+        required: true
+      tags:
+      - BA/Admin APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/MilestoneRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/MilestoneRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Milestone'
+          description: ''
+    patch:
+      operationId: api_v1_milestones_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this milestone.
+        required: true
+      tags:
+      - BA/Admin APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedMilestoneRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedMilestoneRequest'
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Milestone'
+          description: ''
+    delete:
+      operationId: api_v1_milestones_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this milestone.
+        required: true
+      tags:
+      - BA/Admin APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/my/tasks:
+    get:
+      operationId: api_v1_my_tasks_retrieve
+      tags:
+      - Employee APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/notifications/:
+    get:
+      operationId: api_v1_notifications_list
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      tags:
+      - Common APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedNotificationList'
+          description: ''
+  /api/v1/notifications/{id}/:
+    get:
+      operationId: api_v1_notifications_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this notification.
+        required: true
+      tags:
+      - Common APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+          description: ''
+  /api/v1/notifications/{id}/read/:
+    patch:
+      operationId: api_v1_notifications_read_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this notification.
+        required: true
+      tags:
+      - Common APIs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedNotificationRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedNotificationRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedNotificationRequest'
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+          description: ''
+  /api/v1/projects/:
+    get:
+      operationId: api_v1_projects_list
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      tags:
+      - BA/Admin APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedProjectList'
+          description: ''
+    post:
+      operationId: api_v1_projects_create
+      tags:
+      - BA/Admin APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProjectRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProjectRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+          description: ''
+  /api/v1/projects/{id}/:
+    get:
+      operationId: api_v1_projects_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this project.
+        required: true
+      tags:
+      - BA/Admin APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+          description: ''
+    put:
+      operationId: api_v1_projects_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this project.
+        required: true
+      tags:
+      - BA/Admin APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProjectRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProjectRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+          description: ''
+    patch:
+      operationId: api_v1_projects_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this project.
+        required: true
+      tags:
+      - BA/Admin APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedProjectRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedProjectRequest'
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+          description: ''
+    delete:
+      operationId: api_v1_projects_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this project.
+        required: true
+      tags:
+      - BA/Admin APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/projects/{id}/request-deadline-change/:
+    post:
+      operationId: api_v1_projects_request_deadline_change_create
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this project.
+        required: true
+      tags:
+      - BA/Admin APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/DeadlineChangeRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/DeadlineChangeRequestRequest'
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/projects/{id}/request-delete/:
+    post:
+      operationId: api_v1_projects_request_delete_create
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this project.
+        required: true
+      tags:
+      - BA/Admin APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/DeleteRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/DeleteRequestRequest'
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/tasks/:
+    get:
+      operationId: api_v1_tasks_list
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      tags:
+      - BA/Employee APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedTaskList'
+          description: ''
+    post:
+      operationId: api_v1_tasks_create
+      tags:
+      - BA/Employee APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+  /api/v1/tasks/{id}/:
+    get:
+      operationId: api_v1_tasks_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task.
+        required: true
+      tags:
+      - BA/Employee APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+    put:
+      operationId: api_v1_tasks_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task.
+        required: true
+      tags:
+      - BA/Employee APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+    patch:
+      operationId: api_v1_tasks_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task.
+        required: true
+      tags:
+      - BA/Employee APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedTaskRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedTaskRequest'
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+    delete:
+      operationId: api_v1_tasks_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task.
+        required: true
+      tags:
+      - BA/Employee APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/tasks/{id}/assign/:
+    post:
+      operationId: api_v1_tasks_assign_create
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task.
+        required: true
+      tags:
+      - BA/Employee APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+  /api/v1/tasks/{id}/pause/:
+    post:
+      operationId: api_v1_tasks_pause_create
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task.
+        required: true
+      tags:
+      - BA/Employee APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+  /api/v1/tasks/{id}/request-deadline-change/:
+    post:
+      operationId: api_v1_tasks_request_deadline_change_create
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task.
+        required: true
+      tags:
+      - BA/Employee APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/DeadlineChangeRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/DeadlineChangeRequestRequest'
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/tasks/{id}/start/:
+    post:
+      operationId: api_v1_tasks_start_create
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task.
+        required: true
+      tags:
+      - BA/Employee APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+  /api/v1/tasks/{id}/status/:
+    patch:
+      operationId: api_v1_tasks_status_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task.
+        required: true
+      tags:
+      - BA/Employee APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedTaskRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedTaskRequest'
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+  /api/v1/tasks/{id}/stop/:
+    post:
+      operationId: api_v1_tasks_stop_create
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task.
+        required: true
+      tags:
+      - BA/Employee APIs
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+  /api/v1/tasks/{id}/time-logs/:
+    get:
+      operationId: api_v1_tasks_time_logs_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this task.
+        required: true
+      tags:
+      - BA/Employee APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+          description: ''
+  /api/v1/users/:
+    get:
+      operationId: api_v1_users_list
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
+      tags:
+      - Admin APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUserList'
+          description: ''
+    post:
+      operationId: api_v1_users_create
+      tags:
+      - Admin APIs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+        required: true
+      security:
+      - BearerAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserCreate'
+          description: ''
+  /api/v1/users/{id}/:
+    get:
+      operationId: api_v1_users_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this user.
+        required: true
+      tags:
+      - Admin APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+          description: ''
+    put:
+      operationId: api_v1_users_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this user.
+        required: true
+      tags:
+      - Admin APIs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserUpdate'
+          description: ''
+    patch:
+      operationId: api_v1_users_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this user.
+        required: true
+      tags:
+      - Admin APIs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedUserUpdateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUserUpdateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUserUpdateRequest'
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserUpdate'
+          description: ''
+    delete:
+      operationId: api_v1_users_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this user.
+        required: true
+      tags:
+      - Admin APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/work-tracking:
+    get:
+      operationId: api_v1_work_tracking_retrieve
+      tags:
+      - BA/Admin APIs
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+components:
+  schemas:
+    AdminForgotPasswordRequestRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+      required:
+      - email
+    AdminForgotPasswordVerifyRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+        otp:
+          type: string
+          minLength: 6
+          maxLength: 6
+        new_password:
+          type: string
+          writeOnly: true
+          minLength: 6
+      required:
+      - email
+      - new_password
+      - otp
+    AdminPasswordResetRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+        new_password:
+          type: string
+          writeOnly: true
+          minLength: 6
+      required:
+      - email
+      - new_password
+    AuthLoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+        password:
+          type: string
+          writeOnly: true
+          minLength: 1
+      required:
+      - email
+      - password
+    BlankEnum:
+      enum:
+      - ''
+    DeadlineChangeRequestRequest:
+      type: object
+      properties:
+        new_deadline:
+          type: string
+          format: date
+          nullable: true
+        reason:
+          type: string
+          maxLength: 500
+    DeleteRequestRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+    DepartmentEnum:
+      enum:
+      - BACKEND
+      - FRONTEND
+      - FULLSTACK
+      type: string
+      description: |-
+        * `BACKEND` - Backend
+        * `FRONTEND` - Frontend
+        * `FULLSTACK` - Fullstack
+    ExperienceLevelEnum:
+      enum:
+      - JUNIOR
+      - SENIOR
+      type: string
+      description: |-
+        * `JUNIOR` - Junior
+        * `SENIOR` - Senior
+    FileAttachment:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        project:
+          type: integer
+          nullable: true
+        project_name:
+          type: string
+          readOnly: true
+        milestone:
+          type: integer
+          nullable: true
+        milestone_name:
+          type: string
+          readOnly: true
+        task:
+          type: integer
+          nullable: true
+        task_name:
+          type: string
+          readOnly: true
+        file:
+          type: string
+          format: uri
+        uploaded_by:
+          type: integer
+          readOnly: true
+        mime_type:
+          type: string
+          readOnly: true
+        size_bytes:
+          type: integer
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - file
+      - id
+      - milestone_name
+      - mime_type
+      - project_name
+      - size_bytes
+      - task_name
+      - updated_at
+      - uploaded_by
+    FileAttachmentRequest:
+      type: object
+      properties:
+        project:
+          type: integer
+          nullable: true
+        milestone:
+          type: integer
+          nullable: true
+        task:
+          type: integer
+          nullable: true
+        file:
+          type: string
+          format: binary
+      required:
+      - file
+    FileUploadRequestRequest:
+      type: object
+      properties:
+        project:
+          type: integer
+          nullable: true
+        milestone:
+          type: integer
+          nullable: true
+        task:
+          type: integer
+          nullable: true
+        file:
+          type: string
+          format: binary
+      required:
+      - file
+    Milestone:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        milestone_no:
+          type: integer
+          readOnly: true
+        project:
+          type: integer
+        project_name:
+          type: string
+          readOnly: true
+        name:
+          type: string
+          maxLength: 255
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        document:
+          type: string
+          format: uri
+          nullable: true
+        status:
+          $ref: '#/components/schemas/MilestoneStatusEnum'
+        created_by:
+          type: integer
+          readOnly: true
+        created_by_name:
+          type: string
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - created_by
+      - created_by_name
+      - end_date
+      - id
+      - milestone_no
+      - name
+      - project
+      - project_name
+      - start_date
+      - updated_at
+    MilestoneRequest:
+      type: object
+      properties:
+        project:
+          type: integer
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        document:
+          type: string
+          format: binary
+          nullable: true
+        status:
+          $ref: '#/components/schemas/MilestoneStatusEnum'
+      required:
+      - end_date
+      - name
+      - project
+      - start_date
+    MilestoneStatusEnum:
+      enum:
+      - NOT_STARTED
+      - IN_PROGRESS
+      - COMPLETED
+      - DELAYED
+      type: string
+      description: |-
+        * `NOT_STARTED` - Not Started
+        * `IN_PROGRESS` - In Progress
+        * `COMPLETED` - Completed
+        * `DELAYED` - Delayed
+    Notification:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+        type:
+          type: string
+          maxLength: 100
+        title:
+          type: string
+          maxLength: 255
+        message:
+          type: string
+        ref_type:
+          oneOf:
+          - $ref: '#/components/schemas/RefTypeEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        ref_id:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+          nullable: true
+        is_read:
+          type: boolean
+        user:
+          type: integer
+      required:
+      - created_at
+      - id
+      - message
+      - title
+      - type
+      - updated_at
+      - user
+    PaginatedFileAttachmentList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileAttachment'
+    PaginatedMilestoneList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Milestone'
+    PaginatedNotificationList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+    PaginatedProjectList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Project'
+    PaginatedTaskList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+    PaginatedUserList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+    PatchedFileAttachmentRequest:
+      type: object
+      properties:
+        project:
+          type: integer
+          nullable: true
+        milestone:
+          type: integer
+          nullable: true
+        task:
+          type: integer
+          nullable: true
+        file:
+          type: string
+          format: binary
+    PatchedMilestoneRequest:
+      type: object
+      properties:
+        project:
+          type: integer
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        start_date:
+          type: string
+          format: date
+        end_date:
+          type: string
+          format: date
+        document:
+          type: string
+          format: binary
+          nullable: true
+        status:
+          $ref: '#/components/schemas/MilestoneStatusEnum'
+    PatchedNotificationRequest:
+      type: object
+      properties:
+        type:
+          type: string
+          minLength: 1
+          maxLength: 100
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        message:
+          type: string
+          minLength: 1
+        ref_type:
+          oneOf:
+          - $ref: '#/components/schemas/RefTypeEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        ref_id:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+          nullable: true
+        is_read:
+          type: boolean
+        user:
+          type: integer
+    PatchedProjectRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        start_date:
+          type: string
+          format: date
+        deadline:
+          type: string
+          format: date
+        document:
+          type: string
+          format: binary
+          nullable: true
+        status:
+          $ref: '#/components/schemas/ProjectStatusEnum'
+    PatchedTaskRequest:
+      type: object
+      properties:
+        project:
+          type: integer
+        milestone:
+          type: integer
+          nullable: true
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        assigned_to:
+          type: integer
+          nullable: true
+        status:
+          $ref: '#/components/schemas/TaskStatusEnum'
+        priority:
+          type: string
+          maxLength: 20
+        deadline:
+          type: string
+          format: date
+          nullable: true
+        document:
+          type: string
+          format: binary
+          nullable: true
+    PatchedUserUpdateRequest:
+      type: object
+      properties:
+        first_name:
+          type: string
+          maxLength: 150
+        last_name:
+          type: string
+          maxLength: 150
+        email:
+          type: string
+          format: email
+          title: Email address
+          maxLength: 254
+        password:
+          type: string
+          writeOnly: true
+          minLength: 6
+        role:
+          $ref: '#/components/schemas/RoleEnum'
+        status:
+          $ref: '#/components/schemas/Status372Enum'
+        experience_level:
+          oneOf:
+          - $ref: '#/components/schemas/ExperienceLevelEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        department:
+          oneOf:
+          - $ref: '#/components/schemas/DepartmentEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        tech_stack:
+          oneOf:
+          - $ref: '#/components/schemas/TechStackEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+    Project:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        created_by:
+          type: integer
+          readOnly: true
+        created_by_name:
+          type: string
+          readOnly: true
+        start_date:
+          type: string
+          format: date
+        deadline:
+          type: string
+          format: date
+        document:
+          type: string
+          format: uri
+          nullable: true
+        status:
+          $ref: '#/components/schemas/ProjectStatusEnum'
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - created_by
+      - created_by_name
+      - deadline
+      - id
+      - name
+      - start_date
+      - updated_at
+    ProjectRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        start_date:
+          type: string
+          format: date
+        deadline:
+          type: string
+          format: date
+        document:
+          type: string
+          format: binary
+          nullable: true
+        status:
+          $ref: '#/components/schemas/ProjectStatusEnum'
+      required:
+      - deadline
+      - name
+      - start_date
+    ProjectStatusEnum:
+      enum:
+      - PLANNED
+      - ACTIVE
+      - COMPLETED
+      - DELAYED
+      - ARCHIVED
+      type: string
+      description: |-
+        * `PLANNED` - Planned
+        * `ACTIVE` - Active
+        * `COMPLETED` - Completed
+        * `DELAYED` - Delayed
+        * `ARCHIVED` - Archived
+    RefTypeEnum:
+      enum:
+      - TASK
+      - MILESTONE
+      - PROJECT
+      type: string
+      description: |-
+        * `TASK` - Task
+        * `MILESTONE` - Milestone
+        * `PROJECT` - Project
+    RoleEnum:
+      enum:
+      - ADMIN
+      - BA
+      - EMPLOYEE
+      type: string
+      description: |-
+        * `ADMIN` - Admin
+        * `BA` - Business Analyst
+        * `EMPLOYEE` - Employee
+    Status372Enum:
+      enum:
+      - ACTIVE
+      - INACTIVE
+      type: string
+      description: |-
+        * `ACTIVE` - Active
+        * `INACTIVE` - Inactive
+    Task:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        project:
+          type: integer
+        project_name:
+          type: string
+          readOnly: true
+        milestone:
+          type: integer
+          nullable: true
+        milestone_name:
+          type: string
+          readOnly: true
+        title:
+          type: string
+          maxLength: 255
+        description:
+          type: string
+        assigned_to:
+          type: integer
+          nullable: true
+        assigned_to_name:
+          type: string
+          readOnly: true
+        created_by:
+          type: integer
+          readOnly: true
+        created_by_name:
+          type: string
+          readOnly: true
+        status:
+          $ref: '#/components/schemas/TaskStatusEnum'
+        priority:
+          type: string
+          maxLength: 20
+        deadline:
+          type: string
+          format: date
+          nullable: true
+        document:
+          type: string
+          format: uri
+          nullable: true
+        total_time_spent_seconds:
+          type: integer
+          readOnly: true
+        total_time_spent_display:
+          type: string
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - assigned_to_name
+      - created_at
+      - created_by
+      - created_by_name
+      - id
+      - milestone_name
+      - project
+      - project_name
+      - title
+      - total_time_spent_display
+      - total_time_spent_seconds
+      - updated_at
+    TaskRequest:
+      type: object
+      properties:
+        project:
+          type: integer
+        milestone:
+          type: integer
+          nullable: true
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+        assigned_to:
+          type: integer
+          nullable: true
+        status:
+          $ref: '#/components/schemas/TaskStatusEnum'
+        priority:
+          type: string
+          maxLength: 20
+        deadline:
+          type: string
+          format: date
+          nullable: true
+        document:
+          type: string
+          format: binary
+          nullable: true
+      required:
+      - project
+      - title
+    TaskStatusEnum:
+      enum:
+      - NOT_STARTED
+      - IN_PROGRESS
+      - PAUSED
+      - COMPLETED
+      - DELAYED
+      - BLOCKED
+      type: string
+      description: |-
+        * `NOT_STARTED` - Not Started
+        * `IN_PROGRESS` - In Progress
+        * `PAUSED` - Paused
+        * `COMPLETED` - Completed
+        * `DELAYED` - Delayed
+        * `BLOCKED` - Blocked
+    TechStackEnum:
+      enum:
+      - PYTHON
+      - JAVA
+      - NESTJS
+      - NEXTJS
+      - REACT
+      type: string
+      description: |-
+        * `PYTHON` - Python
+        * `JAVA` - Java
+        * `NESTJS` - NestJS
+        * `NEXTJS` - NextJS
+        * `REACT` - React
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        first_name:
+          type: string
+          maxLength: 150
+        last_name:
+          type: string
+          maxLength: 150
+        email:
+          type: string
+          format: email
+          title: Email address
+          maxLength: 254
+        role:
+          type: string
+          readOnly: true
+        status:
+          type: string
+          readOnly: true
+        experience_level:
+          type: string
+          nullable: true
+          readOnly: true
+        department:
+          type: string
+          readOnly: true
+        tech_stack:
+          type: string
+          readOnly: true
+        date_joined:
+          type: string
+          format: date-time
+          readOnly: true
+        last_login:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+      required:
+      - date_joined
+      - department
+      - experience_level
+      - id
+      - last_login
+      - role
+      - status
+      - tech_stack
+    UserCreate:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        first_name:
+          type: string
+          maxLength: 150
+        last_name:
+          type: string
+          maxLength: 150
+        email:
+          type: string
+          format: email
+          title: Email address
+          maxLength: 254
+        role:
+          $ref: '#/components/schemas/RoleEnum'
+        status:
+          allOf:
+          - $ref: '#/components/schemas/Status372Enum'
+          default: ACTIVE
+        experience_level:
+          default: ''
+          oneOf:
+          - $ref: '#/components/schemas/ExperienceLevelEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        department:
+          default: ''
+          oneOf:
+          - $ref: '#/components/schemas/DepartmentEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        tech_stack:
+          default: ''
+          oneOf:
+          - $ref: '#/components/schemas/TechStackEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+      required:
+      - id
+      - role
+    UserCreateRequest:
+      type: object
+      properties:
+        first_name:
+          type: string
+          maxLength: 150
+        last_name:
+          type: string
+          maxLength: 150
+        email:
+          type: string
+          format: email
+          title: Email address
+          maxLength: 254
+        password:
+          type: string
+          writeOnly: true
+          minLength: 6
+        role:
+          $ref: '#/components/schemas/RoleEnum'
+        status:
+          allOf:
+          - $ref: '#/components/schemas/Status372Enum'
+          default: ACTIVE
+        experience_level:
+          default: ''
+          oneOf:
+          - $ref: '#/components/schemas/ExperienceLevelEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        department:
+          default: ''
+          oneOf:
+          - $ref: '#/components/schemas/DepartmentEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        tech_stack:
+          default: ''
+          oneOf:
+          - $ref: '#/components/schemas/TechStackEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+      required:
+      - password
+      - role
+    UserUpdate:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        first_name:
+          type: string
+          maxLength: 150
+        last_name:
+          type: string
+          maxLength: 150
+        email:
+          type: string
+          format: email
+          title: Email address
+          maxLength: 254
+        role:
+          $ref: '#/components/schemas/RoleEnum'
+        status:
+          $ref: '#/components/schemas/Status372Enum'
+        experience_level:
+          oneOf:
+          - $ref: '#/components/schemas/ExperienceLevelEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        department:
+          oneOf:
+          - $ref: '#/components/schemas/DepartmentEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        tech_stack:
+          oneOf:
+          - $ref: '#/components/schemas/TechStackEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+      required:
+      - id
+    UserUpdateRequest:
+      type: object
+      properties:
+        first_name:
+          type: string
+          maxLength: 150
+        last_name:
+          type: string
+          maxLength: 150
+        email:
+          type: string
+          format: email
+          title: Email address
+          maxLength: 254
+        password:
+          type: string
+          writeOnly: true
+          minLength: 6
+        role:
+          $ref: '#/components/schemas/RoleEnum'
+        status:
+          $ref: '#/components/schemas/Status372Enum'
+        experience_level:
+          oneOf:
+          - $ref: '#/components/schemas/ExperienceLevelEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        department:
+          oneOf:
+          - $ref: '#/components/schemas/DepartmentEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        tech_stack:
+          oneOf:
+          - $ref: '#/components/schemas/TechStackEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Use 'Bearer <token>' or raw JWT token.
+tags:
+- name: Common APIs
+  description: Authentication and shared APIs.
+- name: Admin APIs
+  description: Admin-only management APIs.
+- name: BA/Admin APIs
+  description: APIs used by BA and Admin.
+- name: BA/Employee APIs
+  description: Task APIs used by BA and Employee.
+- name: Employee APIs
+  description: Employee-focused APIs.

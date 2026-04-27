@@ -35,9 +35,28 @@ class UserProfile(TimeStampedModel):
         ACTIVE = "ACTIVE", "Active"
         INACTIVE = "INACTIVE", "Inactive"
 
+    class ExperienceLevel(models.TextChoices):
+        JUNIOR = "JUNIOR", "Junior"
+        SENIOR = "SENIOR", "Senior"
+
+    class Department(models.TextChoices):
+        BACKEND = "BACKEND", "Backend"
+        FRONTEND = "FRONTEND", "Frontend"
+        FULLSTACK = "FULLSTACK", "Fullstack"
+
+    class TechStack(models.TextChoices):
+        PYTHON = "PYTHON", "Python"
+        JAVA = "JAVA", "Java"
+        NESTJS = "NESTJS", "NestJS"
+        NEXTJS = "NEXTJS", "NextJS"
+        REACT = "REACT", "React"
+
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
     role = models.CharField(max_length=20, choices=Roles.choices, default=Roles.EMPLOYEE)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
+    experience_level = models.CharField(max_length=20, choices=ExperienceLevel.choices, blank=True)
+    department = models.CharField(max_length=20, choices=Department.choices, blank=True)
+    tech_stack = models.CharField(max_length=20, choices=TechStack.choices, blank=True)
 
     def __str__(self):
         return f"{self.user.email} ({self.role})"
@@ -61,6 +80,7 @@ class Project(TimeStampedModel):
     )
     start_date = models.DateField()
     deadline = models.DateField()
+    document = models.FileField(upload_to="project_docs/", null=True, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PLANNED)
 
     def __str__(self):
@@ -82,6 +102,7 @@ class Milestone(TimeStampedModel):
     name = models.CharField(max_length=255)
     start_date = models.DateField()
     end_date = models.DateField()
+    document = models.FileField(upload_to="milestone_docs/", null=True, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.NOT_STARTED)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="milestones_created"
@@ -134,6 +155,7 @@ class Task(TimeStampedModel):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.NOT_STARTED)
     priority = models.CharField(max_length=20, blank=True)
     deadline = models.DateField(null=True, blank=True)
+    document = models.FileField(upload_to="task_docs/", null=True, blank=True)
     total_time_spent_seconds = models.PositiveIntegerField(default=0, validators=[MinValueValidator(0)])
 
     def __str__(self):
@@ -150,6 +172,7 @@ class Task(TimeStampedModel):
 #time logs table
 class TimeLog(TimeStampedModel):
     class Source(models.TextChoices):
+        MANUAL_PAUSE = "MANUAL_PAUSE", "Manual Pause"
         MANUAL_STOP = "MANUAL_STOP", "Manual Stop"
         AUTO_STOP_8PM = "AUTO_STOP_8PM", "Auto Stop 8PM"
 

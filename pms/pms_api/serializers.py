@@ -10,6 +10,56 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from .models import FileAttachment, Milestone, Notification, Project, Task, TimeLog, UserProfile
 User = get_user_model()
 
+ALLOWED_DOCUMENT_EXTENSIONS = {".doc", ".docx", ".md"}
+
+
+def validate_uploaded_document(value):
+    if value in (None, ""):
+        return value
+    if not isinstance(value, UploadedFile):
+        raise serializers.ValidationError("Upload a valid file using multipart/form-data.")
+    extension = Path(value.name or "").suffix.lower()
+    if extension not in ALLOWED_DOCUMENT_EXTENSIONS:
+        raise serializers.ValidationError("Only .doc, .docx, and .md files are allowed.")
+    return value
+
+
+def normalize_choice_input(value, choices_enum, aliases=None):
+    if value in (None, ""):
+        return value
+    if not isinstance(value, str):
+        return value
+
+    aliases = aliases or {}
+    normalized = value.strip()
+    upper = normalized.upper()
+
+    # Accept direct enum value like "EMPLOYEE"
+    if upper in choices_enum.values:
+        return upper
+
+    # Accept display label like "Employee"
+    for enum_value, enum_label in choices_enum.choices:
+        if normalized.lower() == str(enum_label).strip().lower():
+            return enum_value
+
+    # Accept custom shortcuts like "jr"
+    if upper in aliases:
+        return aliases[upper]
+
+    return value
+
+
+class FlexibleChoiceField(serializers.ChoiceField):
+    def __init__(self, *args, normalizer=None, **kwargs):
+        self.normalizer = normalizer
+        super().__init__(*args, **kwargs)
+
+    def to_internal_value(self, data):
+        if self.normalizer:
+            data = self.normalizer(data)
+        return super().to_internal_value(data)
+
 
 #login serializer
 class AuthLoginSerializer(serializers.Serializer):
@@ -32,10 +82,25 @@ class AuthLoginSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     role = serializers.SerializerMethodField()
     status = serializers.SerializerMethodField()
+    experience_level = serializers.SerializerMethodField()
+    department = serializers.SerializerMethodField()
+    tech_stack = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ["id", "first_name", "last_name", "email", "role", "status", "date_joined", "last_login"]
+        fields = [
+            "id",
+            "first_name",
+            "last_name",
+            "email",
+            "role",
+            "status",
+            "experience_level",
+            "department",
+            "tech_stack",
+            "date_joined",
+            "last_login",
+        ]
         read_only_fields = ["id", "date_joined", "last_login"]
 
     def get_role(self, obj) -> str:
@@ -46,6 +111,18 @@ class UserSerializer(serializers.ModelSerializer):
         profile = getattr(obj, "profile", None)
         return getattr(profile, "status", None)
 
+    def get_experience_level(self, obj) -> str | None:
+        profile = getattr(obj, "profile", None)
+        return getattr(profile, "experience_level", None)
+
+    def get_department(self, obj) -> str:
+        profile = getattr(obj, "profile", None)
+        return getattr(profile, "department", None)
+
+    def get_tech_stack(self, obj) -> str:
+        profile = getattr(obj, "profile", None)
+        return getattr(profile, "tech_stack", None)
+
 
 
 
@@ -53,12 +130,46 @@ class UserSerializer(serializers.ModelSerializer):
 #user create serializer
 class UserCreateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=6)
-    role = serializers.ChoiceField(choices=UserProfile.Roles.choices)
-    status = serializers.ChoiceField(choices=UserProfile.Status.choices, default=UserProfile.Status.ACTIVE)
+    role = FlexibleChoiceField(
+        choices=UserProfile.Roles.choices,
+        normalizer=lambda v: normalize_choice_input(v, UserProfile.Roles),
+    )
+    status = FlexibleChoiceField(
+        choices=UserProfile.Status.choices,
+        default=UserProfile.Status.ACTIVE,
+        normalizer=lambda v: normalize_choice_input(v, UserProfile.Status),
+    )
+    experience_level = FlexibleChoiceField(
+        choices=UserProfile.ExperienceLevel.choices, required=False, allow_blank=True, default=""
+        , normalizer=lambda v: normalize_choice_input(
+            v,
+            UserProfile.ExperienceLevel,
+            aliases={"JR": UserProfile.ExperienceLevel.JUNIOR, "SR": UserProfile.ExperienceLevel.SENIOR},
+        )
+    )
+    department = FlexibleChoiceField(
+        choices=UserProfile.Department.choices, required=False, allow_blank=True, default=""
+        , normalizer=lambda v: normalize_choice_input(v, UserProfile.Department)
+    )
+    tech_stack = FlexibleChoiceField(
+        choices=UserProfile.TechStack.choices, required=False, allow_blank=True, default=""
+        , normalizer=lambda v: normalize_choice_input(v, UserProfile.TechStack)
+    )
 
     class Meta:
         model = User
-        fields = ["id", "first_name", "last_name", "email", "password", "role", "status"]
+        fields = [
+            "id",
+            "first_name",
+            "last_name",
+            "email",
+            "password",
+            "role",
+            "status",
+            "experience_level",
+            "department",
+            "tech_stack",
+        ]
         read_only_fields = ["id"]
 
     def validate_email(self, value):
@@ -74,16 +185,41 @@ class UserCreateSerializer(serializers.ModelSerializer):
             )
         return value
 
-    def validate_role(self, value):
-        if isinstance(value, str):
-            upper = value.strip().upper()
-            if upper in UserProfile.Roles.values:
-                return upper
-        return value
+    def validate(self, attrs):
+        request = self.context.get("request")
+        requester_role = getattr(getattr(getattr(request, "user", None), "profile", None), "role", None)
+        if requester_role != UserProfile.Roles.ADMIN:
+            raise serializers.ValidationError("Only admin users can create users.")
+
+        role = attrs.get("role")
+        experience_level = attrs.get("experience_level", "")
+        department = attrs.get("department", "")
+        tech_stack = attrs.get("tech_stack", "")
+
+        if role == UserProfile.Roles.EMPLOYEE:
+            required_fields = {
+                "experience_level": experience_level,
+                "department": department,
+                "tech_stack": tech_stack,
+            }
+            missing = [field for field, value in required_fields.items() if not value]
+            if missing:
+                raise serializers.ValidationError(
+                    {field: "This field is required when role is EMPLOYEE." for field in missing}
+                )
+        else:
+            attrs["experience_level"] = ""
+            attrs["department"] = ""
+            attrs["tech_stack"] = ""
+
+        return attrs
 
     def create(self, validated_data):
         role = validated_data.pop("role")
         profile_status = validated_data.pop("status", UserProfile.Status.ACTIVE)
+        experience_level = validated_data.pop("experience_level", "")
+        department = validated_data.pop("department", "")
+        tech_stack = validated_data.pop("tech_stack", "")
         password = validated_data.pop("password")
         user = User(**validated_data)
         user.username = validated_data["email"]
@@ -94,18 +230,66 @@ class UserCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"email": "This email is already registered. Use a different email for new users."}
             )
-        UserProfile.objects.create(user=user, role=role, status=profile_status)
+        UserProfile.objects.create(
+            user=user,
+            role=role,
+            status=profile_status,
+            experience_level=experience_level,
+            department=department,
+            tech_stack=tech_stack,
+        )
         return user
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=6, required=False, allow_blank=False)
-    role = serializers.ChoiceField(choices=UserProfile.Roles.choices, required=False)
-    status = serializers.ChoiceField(choices=UserProfile.Status.choices, required=False)
+    role = FlexibleChoiceField(
+        choices=UserProfile.Roles.choices,
+        required=False,
+        normalizer=lambda v: normalize_choice_input(v, UserProfile.Roles),
+    )
+    status = FlexibleChoiceField(
+        choices=UserProfile.Status.choices,
+        required=False,
+        normalizer=lambda v: normalize_choice_input(v, UserProfile.Status),
+    )
+    experience_level = FlexibleChoiceField(
+        choices=UserProfile.ExperienceLevel.choices,
+        required=False,
+        allow_blank=True,
+        normalizer=lambda v: normalize_choice_input(
+            v,
+            UserProfile.ExperienceLevel,
+            aliases={"JR": UserProfile.ExperienceLevel.JUNIOR, "SR": UserProfile.ExperienceLevel.SENIOR},
+        ),
+    )
+    department = FlexibleChoiceField(
+        choices=UserProfile.Department.choices,
+        required=False,
+        allow_blank=True,
+        normalizer=lambda v: normalize_choice_input(v, UserProfile.Department),
+    )
+    tech_stack = FlexibleChoiceField(
+        choices=UserProfile.TechStack.choices,
+        required=False,
+        allow_blank=True,
+        normalizer=lambda v: normalize_choice_input(v, UserProfile.TechStack),
+    )
 
     class Meta:
         model = User
-        fields = ["id", "first_name", "last_name", "email", "password", "role", "status"]
+        fields = [
+            "id",
+            "first_name",
+            "last_name",
+            "email",
+            "password",
+            "role",
+            "status",
+            "experience_level",
+            "department",
+            "tech_stack",
+        ]
         read_only_fields = ["id"]
 
     def validate_email(self, value):
@@ -121,6 +305,9 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         password = validated_data.pop("password", None)
         role = validated_data.pop("role", None)
         profile_status = validated_data.pop("status", None)
+        experience_level = validated_data.pop("experience_level", None)
+        department = validated_data.pop("department", None)
+        tech_stack = validated_data.pop("tech_stack", None)
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
@@ -136,8 +323,41 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         if profile_status is not None:
             profile.status = profile_status
             profile_changed_fields.append("status")
+        if experience_level is not None:
+            profile.experience_level = experience_level
+            profile_changed_fields.append("experience_level")
+        if department is not None:
+            profile.department = department
+            profile_changed_fields.append("department")
+        if tech_stack is not None:
+            profile.tech_stack = tech_stack
+            profile_changed_fields.append("tech_stack")
+
+        target_role = role if role is not None else profile.role
+        if target_role != UserProfile.Roles.EMPLOYEE:
+            if profile.experience_level:
+                profile.experience_level = ""
+                profile_changed_fields.append("experience_level")
+            if profile.department:
+                profile.department = ""
+                profile_changed_fields.append("department")
+            if profile.tech_stack:
+                profile.tech_stack = ""
+                profile_changed_fields.append("tech_stack")
+        else:
+            missing_employee_fields = []
+            if not profile.experience_level:
+                missing_employee_fields.append("experience_level")
+            if not profile.department:
+                missing_employee_fields.append("department")
+            if not profile.tech_stack:
+                missing_employee_fields.append("tech_stack")
+            if missing_employee_fields:
+                raise serializers.ValidationError(
+                    {field: "This field is required when role is EMPLOYEE." for field in missing_employee_fields}
+                )
         if profile_changed_fields:
-            profile.save(update_fields=profile_changed_fields)
+            profile.save(update_fields=list(dict.fromkeys(profile_changed_fields)))
 
         if password:
             instance.set_password(password)
@@ -161,6 +381,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "created_by_name",
             "start_date",
             "deadline",
+            "document",
             "status",
             "created_at",
             "updated_at",
@@ -173,6 +394,8 @@ class ProjectSerializer(serializers.ModelSerializer):
         return obj.created_by.get_full_name().strip() or obj.created_by.email
 
     def validate(self, attrs):
+        if "document" in attrs:
+            attrs["document"] = validate_uploaded_document(attrs["document"])
         if self.instance and "deadline" in attrs and attrs["deadline"] != self.instance.deadline:
             request = self.context.get("request")
             role = getattr(getattr(getattr(request, "user", None), "profile", None), "role", None)
@@ -199,6 +422,7 @@ class MilestoneSerializer(serializers.ModelSerializer):
             "name",
             "start_date",
             "end_date",
+            "document",
             "status",
             "created_by",
             "created_by_name",
@@ -213,6 +437,8 @@ class MilestoneSerializer(serializers.ModelSerializer):
         return obj.created_by.get_full_name().strip() or obj.created_by.email
 
     def validate(self, attrs):
+        if "document" in attrs:
+            attrs["document"] = validate_uploaded_document(attrs["document"])
         if self.instance and "end_date" in attrs and attrs["end_date"] != self.instance.end_date:
             request = self.context.get("request")
             if not request or request.user.id != self.instance.created_by_id:
@@ -228,6 +454,8 @@ class TaskSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.SerializerMethodField(read_only=True)
     project_name = serializers.CharField(source="project.name", read_only=True)
     milestone_name = serializers.CharField(source="milestone.name", read_only=True)
+    project_document = serializers.FileField(source="project.document", read_only=True)
+    milestone_document = serializers.FileField(source="milestone.document", read_only=True)
     total_time_spent_display = serializers.CharField(read_only=True)
 
     class Meta:
@@ -236,8 +464,10 @@ class TaskSerializer(serializers.ModelSerializer):
             "id",
             "project",
             "project_name",
+            "project_document",
             "milestone",
             "milestone_name",
+            "milestone_document",
             "title",
             "description",
             "assigned_to",
@@ -247,12 +477,25 @@ class TaskSerializer(serializers.ModelSerializer):
             "status",
             "priority",
             "deadline",
+            "document",
             "total_time_spent_seconds",
             "total_time_spent_display",
             "created_at",
             "updated_at",
         ]
         read_only_fields = ["id", "created_by", "total_time_spent_seconds", "created_at", "updated_at"]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        role = getattr(getattr(getattr(request, "user", None), "profile", None), "role", None)
+        if role == UserProfile.Roles.EMPLOYEE:
+            data.pop("total_time_spent_seconds", None)
+            data.pop("total_time_spent_display", None)
+        return data
+
+    def validate_document(self, value):
+        return validate_uploaded_document(value)
 
     def get_created_by_name(self, obj) -> str:
         if not obj.created_by:
@@ -296,6 +539,11 @@ class FileAttachmentSerializer(serializers.ModelSerializer):
     project_name = serializers.SerializerMethodField(read_only=True)
     milestone_name = serializers.SerializerMethodField(read_only=True)
     task_name = serializers.SerializerMethodField(read_only=True)
+    resolved_project_id = serializers.SerializerMethodField(read_only=True)
+    resolved_project_name = serializers.SerializerMethodField(read_only=True)
+    linked_to_type = serializers.SerializerMethodField(read_only=True)
+    linked_to_id = serializers.SerializerMethodField(read_only=True)
+    linked_to_name = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = FileAttachment
@@ -307,6 +555,11 @@ class FileAttachmentSerializer(serializers.ModelSerializer):
             "milestone_name",
             "task",
             "task_name",
+            "resolved_project_id",
+            "resolved_project_name",
+            "linked_to_type",
+            "linked_to_id",
+            "linked_to_name",
             "file",
             "uploaded_by",
             "mime_type",
@@ -316,17 +569,62 @@ class FileAttachmentSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "uploaded_by", "mime_type", "size_bytes", "created_at", "updated_at"]
 
-    def get_project_name(self, obj):
+    def get_project_name(self, obj) -> str:
         if obj.project_id:
             return obj.project.name
         return ""
 
-    def get_milestone_name(self, obj):
+    def get_milestone_name(self, obj) -> str:
         if obj.milestone_id:
             return obj.milestone.name
         return ""
 
-    def get_task_name(self, obj):
+    def get_task_name(self, obj) -> str:
+        if obj.task_id:
+            return obj.task.title
+        return ""
+
+    def get_resolved_project_id(self, obj) -> int | None:
+        if obj.project_id:
+            return obj.project_id
+        if obj.milestone_id:
+            return obj.milestone.project_id
+        if obj.task_id:
+            return obj.task.project_id
+        return None
+
+    def get_resolved_project_name(self, obj) -> str:
+        if obj.project_id:
+            return obj.project.name
+        if obj.milestone_id:
+            return obj.milestone.project.name
+        if obj.task_id:
+            return obj.task.project.name
+        return ""
+
+    def get_linked_to_type(self, obj) -> str:
+        if obj.project_id:
+            return "project"
+        if obj.milestone_id:
+            return "milestone"
+        if obj.task_id:
+            return "task"
+        return ""
+
+    def get_linked_to_id(self, obj) -> int | None:
+        if obj.project_id:
+            return obj.project_id
+        if obj.milestone_id:
+            return obj.milestone_id
+        if obj.task_id:
+            return obj.task_id
+        return None
+
+    def get_linked_to_name(self, obj) -> str:
+        if obj.project_id:
+            return obj.project.name
+        if obj.milestone_id:
+            return obj.milestone.name
         if obj.task_id:
             return obj.task.title
         return ""
@@ -409,6 +707,24 @@ class AdminForgotPasswordVerifySerializer(serializers.Serializer):
     email = serializers.EmailField()
     otp = serializers.CharField(min_length=6, max_length=6)
     new_password = serializers.CharField(min_length=6, write_only=True)
+
+
+class AdminAIAskSerializer(serializers.Serializer):
+    """
+    Send `question` only for most calls. Optional filters are for advanced use; 0 or omitted means no filter.
+    """
+
+    question = serializers.CharField(max_length=4000, min_length=1, trim_whitespace=True)
+    project_id = serializers.IntegerField(required=False, allow_null=True)
+    milestone_id = serializers.IntegerField(required=False, allow_null=True)
+    task_id = serializers.IntegerField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        for key in ("project_id", "milestone_id", "task_id"):
+            v = attrs.get(key)
+            if v is None or v == 0:
+                attrs[key] = None
+        return attrs
 
 
 class DeadlineChangeRequestSerializer(serializers.Serializer):

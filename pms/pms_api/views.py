@@ -5,10 +5,11 @@ from django.core.mail import send_mail
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
+from html import escape
 import logging
 import secrets
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import OpenApiExample, extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -19,10 +20,13 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 
 
+from .ai_readonly_context import build_readonly_context_text
 from .models import FileAttachment, Milestone, Notification, Project, Task, TimeLog, UserProfile, humanize_duration
+from .ollama_client import OllamaClientError, ollama_chat
 from .pagination import StandardResultsSetPagination
 from .permissions import IsAdmin, IsAdminOrBA, user_role
 from .serializers import (
+    AdminAIAskSerializer,
     AuthLoginSerializer,
     AuthResponseSerializer,
     AdminForgotPasswordRequestSerializer,
@@ -47,6 +51,62 @@ from .serializers import (
 User = get_user_model()
 logger = logging.getLogger(__name__)
 ADMIN_RESET_OTP_TTL_SECONDS = 600
+
+
+def _render_email_html(subject, greeting, intro_text, detail_rows, footer_note="Regards,<br>PMS Team"):
+    detail_items = "".join(
+        f"""
+        <tr>
+          <td style="padding:8px 0;color:#6b7280;font-size:14px;font-weight:600;vertical-align:top;width:180px;">{escape(str(label))}</td>
+          <td style="padding:8px 0;color:#111827;font-size:14px;">{escape(str(value))}</td>
+        </tr>
+        """
+        for label, value in detail_rows
+    )
+    return f"""
+    <html>
+      <body style="margin:0;padding:0;background-color:#f3f4f6;font-family:Arial,sans-serif;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#f3f4f6;padding:24px 0;">
+          <tr>
+            <td align="center">
+              <table role="presentation" width="640" cellspacing="0" cellpadding="0" style="background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+                <tr>
+                  <td style="background:#2563eb;color:#ffffff;padding:20px 24px;font-size:20px;font-weight:700;">{escape(subject)}</td>
+                </tr>
+                <tr>
+                  <td style="padding:24px;">
+                    <p style="margin:0 0 12px;color:#111827;font-size:15px;">{escape(greeting)}</p>
+                    <p style="margin:0 0 18px;color:#374151;font-size:14px;line-height:1.6;">{escape(intro_text)}</p>
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;padding:8px 0;">
+                      {detail_items}
+                    </table>
+                    <p style="margin:18px 0 0;color:#374151;font-size:14px;line-height:1.6;">{footer_note}</p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+    """
+
+
+def _send_styled_email(subject, recipient_list, greeting, intro_text, detail_rows, footer_note="Regards,\nPMS Team"):
+    message_lines = [greeting, "", intro_text, ""]
+    for label, value in detail_rows:
+        message_lines.append(f"{label}: {value}")
+    message_lines.extend(["", footer_note])
+    plain_text = "\n".join(message_lines)
+    html_message = _render_email_html(subject, greeting, intro_text, detail_rows, footer_note=footer_note.replace("\n", "<br>"))
+    send_mail(
+        subject=subject,
+        message=plain_text,
+        from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+        recipient_list=recipient_list,
+        fail_silently=False,
+        html_message=html_message,
+    )
 
 def api_response(success, message, code, data=None):
     return Response(
@@ -199,6 +259,9 @@ def build_admin_overview_payload(project_id=None, milestone_id=None, task_id=Non
                 "id": project.id,
                 "name": project.name,
                 "status": project.status,
+                "start_date": project.start_date,
+                "deadline": project.deadline,
+                "description_excerpt": (project.description or "")[:500],
                 "created_by_id": project.created_by_id,
                 "created_by_name": project.created_by.get_full_name().strip() or project.created_by.email,
             }
@@ -212,6 +275,8 @@ def build_admin_overview_payload(project_id=None, milestone_id=None, task_id=Non
                 "project_id": milestone.project_id,
                 "project_name": milestone.project.name,
                 "status": milestone.status,
+                "start_date": milestone.start_date,
+                "end_date": milestone.end_date,
                 "created_by_id": milestone.created_by_id,
                 "created_by_name": milestone.created_by.get_full_name().strip() or milestone.created_by.email,
             }
@@ -227,6 +292,7 @@ def build_admin_overview_payload(project_id=None, milestone_id=None, task_id=Non
                 "milestone_no": task.milestone.milestone_no if task.milestone else None,
                 "milestone_name": task.milestone.name if task.milestone else None,
                 "status": task.status,
+                "deadline": task.deadline,
                 "created_by_id": task.created_by_id,
                 "created_by_name": task.created_by.get_full_name().strip() or task.created_by.email,
                 "assigned_to_id": task.assigned_to_id,
@@ -242,23 +308,15 @@ def build_admin_overview_payload(project_id=None, milestone_id=None, task_id=Non
 
 def send_task_assignment_email(employee, task):
     subject = f"Task Assigned: {task.title}"
-    message = (
-        f"Hi {employee.first_name or employee.username},\n\n"
-        f"A task has been assigned to you.\n\n"
-        f"Task: {task.title}\n"
-        f"Description: {task.description or 'N/A'}\n"
-        f"Status: {task.status}\n\n"
-        "Please check your dashboard and start work as scheduled.\n\n"
-        "Regards,\nPMS Team"
-    )
+    greeting = f"Hi {employee.first_name or employee.username},"
+    intro_text = "A task has been assigned to you. Please review the task details below."
+    detail_rows = [
+        ("Task", task.title),
+        ("Description", task.description or "N/A"),
+        ("Status", task.status),
+    ]
     try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-            recipient_list=[employee.email],
-            fail_silently=False,
-        )
+        _send_styled_email(subject, [employee.email], greeting, intro_text, detail_rows)
     except Exception:
         logger.exception("Failed to send task assignment email to %s for task %s", employee.email, task.id)
 
@@ -270,21 +328,20 @@ def send_admin_reset_otp_email(user, otp):
     if not user.email:
         return
     subject = "PMS Admin Password Reset OTP"
-    message = (
-        f"Hi {user.first_name or user.username},\n\n"
-        "Use the OTP below to reset your admin account password.\n\n"
-        f"OTP: {otp}\n"
-        f"This OTP is valid for {ADMIN_RESET_OTP_TTL_SECONDS // 60} minutes.\n\n"
-        "If you did not request this, please ignore this email.\n\n"
-        "Regards,\nPMS Team"
-    )
+    greeting = f"Hi {user.first_name or user.username},"
+    intro_text = "Use the OTP below to reset your admin account password."
+    detail_rows = [
+        ("OTP", otp),
+        ("Valid For", f"{ADMIN_RESET_OTP_TTL_SECONDS // 60} minutes"),
+    ]
     try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-            recipient_list=[user.email],
-            fail_silently=False,
+        _send_styled_email(
+            subject,
+            [user.email],
+            greeting,
+            intro_text,
+            detail_rows,
+            footer_note="If you did not request this, please ignore this email.\n\nRegards,\nPMS Team",
         )
     except Exception:
         logger.exception("Failed to send admin reset OTP email to %s", user.email)
@@ -294,21 +351,20 @@ def send_user_welcome_email(user, raw_password):
     if not user.email:
         return
     subject = "Your PMS account is created"
-    message = (
-        f"Hi {user.first_name or user.username},\n\n"
-        "Your Project Management System account has been created.\n\n"
-        f"Login Email: {user.email}\n"
-        f"Password: {raw_password}\n\n"
-        "Please login to PMS dashboard \n\n"
-        "Regards,\nPMS Team"
-    )
+    greeting = f"Hi {user.first_name or user.username},"
+    intro_text = "Your Project Management System account has been created successfully."
+    detail_rows = [
+        ("Login Email", user.email),
+        ("Password", raw_password),
+    ]
     try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-            recipient_list=[user.email],
-            fail_silently=False,
+        _send_styled_email(
+            subject,
+            [user.email],
+            greeting,
+            intro_text,
+            detail_rows,
+            footer_note="Please login using these credentials.\n\nRegards,\nPMS Team",
         )
     except Exception:
         logger.exception("Failed to send welcome email to %s", user.email)
@@ -317,21 +373,20 @@ def send_user_password_changed_email(user, raw_password):
     if not user.email:
         return
     subject = "Your PMS password has been updated"
-    message = (
-        f"Hi {user.first_name or user.username},\n\n"
-        "Your Project Management System password was changed by Admin.\n\n"
-        f"Login Email: {user.email}\n"
-        f"New Password: {raw_password}\n\n"
-        "Please login for this credentials.\n\n"
-        "Regards,\nPMS Team"
-    )
+    greeting = f"Hi {user.first_name or user.username},"
+    intro_text = "Your Project Management System password was changed by an Admin user."
+    detail_rows = [
+        ("Login Email", user.email),
+        ("New Password", raw_password),
+    ]
     try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-            recipient_list=[user.email],
-            fail_silently=False,
+        _send_styled_email(
+            subject,
+            [user.email],
+            greeting,
+            intro_text,
+            detail_rows,
+            footer_note="Please login using your updated credentials.\n\nRegards,\nPMS Team",
         )
     except Exception:
         logger.exception("Failed to send password change email to %s", user.email)
@@ -343,22 +398,15 @@ def send_task_completed_email(task, completed_by):
         return
     completed_by_name = completed_by.get_full_name().strip() or completed_by.email
     subject = f"Task Completed: {task.title}"
-    message = (
-        f"Hi {owner.first_name or owner.username},\n\n"
-        "A task created by you is now marked as completed.\n\n"
-        f"Task: {task.title}\n"
-        f"Completed by: {completed_by_name}\n"
-        f"Current Status: {task.status}\n\n"
-        "Regards,\nPMS Team"
-    )
+    greeting = f"Hi {owner.first_name or owner.username},"
+    intro_text = "A task created by you is now marked as completed."
+    detail_rows = [
+        ("Task", task.title),
+        ("Completed By", completed_by_name),
+        ("Current Status", task.status),
+    ]
     try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-            recipient_list=[owner.email],
-            fail_silently=False,
-        )
+        _send_styled_email(subject, [owner.email], greeting, intro_text, detail_rows)
     except Exception:
         logger.exception("Failed to send task completion email for task %s", task.id)
 
@@ -368,24 +416,23 @@ def send_task_deadline_change_request_email(task, employee, owner, new_deadline=
         return
     employee_name = employee.get_full_name().strip() or employee.email
     subject = f"Task Deadline Change Request: {task.title}"
-    message = (
-        f"Hi {owner.first_name or owner.username},\n\n"
-        "An employee has requested a task deadline change.\n\n"
-        f"Task: {task.title}\n"
-        f"Requested by: {employee_name}\n"
-        f"Current Deadline: {task.deadline or 'N/A'}\n"
-        f"Requested Deadline: {new_deadline or 'Not provided'}\n"
-        f"Reason: {reason or 'No reason provided'}\n\n"
-        "Please review and update the deadline if needed.\n\n"
-        "Regards,\nPMS Team"
-    )
+    greeting = f"Hi {owner.first_name or owner.username},"
+    intro_text = "An employee has requested a deadline change for a task."
+    detail_rows = [
+        ("Task", task.title),
+        ("Requested By", employee_name),
+        ("Current Deadline", task.deadline or "N/A"),
+        ("Requested Deadline", new_deadline or "Not provided"),
+        ("Reason", reason or "No reason provided"),
+    ]
     try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-            recipient_list=[owner.email],
-            fail_silently=False,
+        _send_styled_email(
+            subject,
+            [owner.email],
+            greeting,
+            intro_text,
+            detail_rows,
+            footer_note="Please review and update the deadline if needed.\n\nRegards,\nPMS Team",
         )
     except Exception:
         logger.exception("Failed task deadline request email for task %s", task.id)
@@ -396,24 +443,23 @@ def send_project_change_request_email(project, requester, admin_emails, request_
         return
     requester_name = requester.get_full_name().strip() or requester.email
     subject = f"Project {request_type} Request: {project.name}"
-    message = (
-        "Hi Admin Team,\n\n"
-        f"A BA has submitted a project {request_type.lower()} request.\n\n"
-        f"Project: {project.name}\n"
-        f"Requested by: {requester_name}\n"
-        f"Current Deadline: {project.deadline}\n"
-        f"Requested Deadline: {new_deadline or 'Not applicable'}\n"
-        f"Reason: {reason or 'No reason provided'}\n\n"
-        "Please review and take action.\n\n"
-        "Regards,\nPMS Team"
-    )
+    greeting = "Hi Admin Team,"
+    intro_text = f"A BA has submitted a project {request_type.lower()} request."
+    detail_rows = [
+        ("Project", project.name),
+        ("Requested By", requester_name),
+        ("Current Deadline", project.deadline),
+        ("Requested Deadline", new_deadline or "Not applicable"),
+        ("Reason", reason or "No reason provided"),
+    ]
     try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
-            recipient_list=admin_emails,
-            fail_silently=False,
+        _send_styled_email(
+            subject,
+            admin_emails,
+            greeting,
+            intro_text,
+            detail_rows,
+            footer_note="Please review and take action.\n\nRegards,\nPMS Team",
         )
     except Exception:
         logger.exception("Failed project %s request email for project %s", request_type, project.id)
@@ -478,7 +524,7 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         raw_password = request.data.get("password")
-        serializer = UserCreateSerializer(data=request.data)
+        serializer = UserCreateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         if raw_password:
@@ -510,6 +556,13 @@ class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
     pagination_class = StandardResultsSetPagination
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if user_role(self.request.user) == UserProfile.Roles.EMPLOYEE:
+            return queryset.filter(tasks__assigned_to=self.request.user).distinct()
+        return queryset
 
     def get_permissions(self):
         if self.action == "destroy":
@@ -621,6 +674,13 @@ class MilestoneViewSet(viewsets.ModelViewSet):
     serializer_class = MilestoneSerializer
     pagination_class = StandardResultsSetPagination
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if user_role(self.request.user) == UserProfile.Roles.EMPLOYEE:
+            return queryset.filter(tasks__assigned_to=self.request.user).distinct()
+        return queryset
 
     def get_permissions(self):
         if self.action in {"create", "update", "partial_update", "destroy"}:
@@ -650,6 +710,7 @@ class TaskViewSet(viewsets.ModelViewSet):
     serializer_class = TaskSerializer
     pagination_class = StandardResultsSetPagination
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
     def get_queryset(self):
         user = self.request.user
@@ -800,7 +861,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         log = TimeLog.objects.filter(task=task, user=request.user, end_time__isnull=True).last()
         if not log:
             return api_response(False, "No active timer found for this task.", status.HTTP_400_BAD_REQUEST)
-        log.stop()
+        log.stop(source=TimeLog.Source.MANUAL_PAUSE)
         task.status = Task.Status.PAUSED
         task.save(update_fields=["status", "total_time_spent_seconds"])
         return api_response(True, "Task paused.", status.HTTP_200_OK, {"task_id": task.id, "status": task.status})
@@ -811,7 +872,14 @@ class TaskViewSet(viewsets.ModelViewSet):
         log = TimeLog.objects.filter(task=task, user=request.user, end_time__isnull=True).last()
         if not log:
             return api_response(False, "No active timer found for this task.", status.HTTP_400_BAD_REQUEST)
-        log.stop()
+        log.stop(source=TimeLog.Source.MANUAL_STOP)
+        if user_role(request.user) == UserProfile.Roles.EMPLOYEE:
+            return api_response(
+                True,
+                "Task stopped.",
+                status.HTTP_200_OK,
+                {"task_id": task.id, "status": task.status},
+            )
         return api_response(
             True,
             "Task stopped.",
@@ -828,9 +896,24 @@ class TaskViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"], url_path="time-logs")
     def time_logs(self, request, pk=None):
+        if user_role(request.user) not in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
+            return api_response(False, "Only Admin or BA can view time logs.", status.HTTP_403_FORBIDDEN)
         task = self.get_object()
         logs = task.time_logs.all().order_by("-created_at")
-        return api_response(True, "Time logs fetched.", status.HTTP_200_OK, TimeLogSerializer(logs, many=True).data)
+        history = logs.aggregate(
+            start_count=Count("id"),
+            pause_count=Count("id", filter=Q(source=TimeLog.Source.MANUAL_PAUSE)),
+            stop_count=Count("id", filter=Q(source=TimeLog.Source.MANUAL_STOP)),
+        )
+        return api_response(
+            True,
+            "Time logs fetched.",
+            status.HTTP_200_OK,
+            {
+                "history": history,
+                "time_logs": TimeLogSerializer(logs, many=True).data,
+            },
+        )
 
     @action(detail=True, methods=["patch"], url_path="status")
     def update_status(self, request, pk=None):
@@ -902,7 +985,18 @@ class TaskViewSet(viewsets.ModelViewSet):
 #file attachment view set pagination
 @extend_schema(tags=["Common APIs"])
 class FileAttachmentViewSet(viewsets.ModelViewSet):
-    queryset = FileAttachment.objects.select_related("uploaded_by", "project", "milestone", "task").all().order_by("-created_at")
+    queryset = (
+        FileAttachment.objects.select_related(
+            "uploaded_by",
+            "project",
+            "milestone",
+            "milestone__project",
+            "task",
+            "task__project",
+        )
+        .all()
+        .order_by("-created_at")
+    )
     serializer_class = FileAttachmentSerializer
     pagination_class = StandardResultsSetPagination
     permission_classes = [IsAuthenticated]
@@ -915,7 +1009,14 @@ class FileAttachmentViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         base_qs = (
-            FileAttachment.objects.select_related("uploaded_by", "project", "milestone", "task")
+            FileAttachment.objects.select_related(
+                "uploaded_by",
+                "project",
+                "milestone",
+                "milestone__project",
+                "task",
+                "task__project",
+            )
             .all()
             .order_by("-created_at")
         )
@@ -1062,15 +1163,9 @@ class DashboardAPIView(APIView):
             }
             return api_response(True, "BA dashboard fetched.", status.HTTP_200_OK, data)
         data = {
-            "today_worked_seconds": sum(
-                TimeLog.objects.filter(user=user, start_time__date=timezone.localdate()).values_list(
-                    "duration_seconds", flat=True
-                )
-            ),
             "active_task": Task.objects.filter(assigned_to=user, status=Task.Status.IN_PROGRESS).values("id", "title").first(),
             "completed_tasks": Task.objects.filter(assigned_to=user, status=Task.Status.COMPLETED).count(),
         }
-        data["today_worked_display"] = humanize_duration(data["today_worked_seconds"])
         return api_response(True, "Employee dashboard fetched.", status.HTTP_200_OK, data)
 
 
@@ -1079,7 +1174,7 @@ class DashboardAPIView(APIView):
 
 @extend_schema(tags=["BA/Admin APIs"])
 class WorkTrackingAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdminOrBA]
 
     @extend_schema(responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
@@ -1139,6 +1234,11 @@ class WorkTrackingAPIView(APIView):
             last_completed_log = (
                 TimeLog.objects.filter(task=task, user=task.assigned_to, end_time__isnull=False).order_by("-end_time").first()
             )
+            history = TimeLog.objects.filter(task=task, user=task.assigned_to).aggregate(
+                start_count=Count("id"),
+                pause_count=Count("id", filter=Q(source=TimeLog.Source.MANUAL_PAUSE)),
+                stop_count=Count("id", filter=Q(source=TimeLog.Source.MANUAL_STOP)),
+            )
 
             records.append(
                 {
@@ -1162,6 +1262,7 @@ class WorkTrackingAPIView(APIView):
                     "today_worked_display": humanize_duration(today_worked_seconds),
                     "total_time_spent_seconds": task.total_time_spent_seconds,
                     "total_time_spent_display": humanize_duration(task.total_time_spent_seconds),
+                    "history": history,
                 }
             )
 
@@ -1196,6 +1297,90 @@ class AdminOverviewAPIView(APIView):
         task_id = request.query_params.get("task_id")
         data = build_admin_overview_payload(project_id=project_id, milestone_id=milestone_id, task_id=task_id)
         return api_response(True, "Admin overview fetched.", status.HTTP_200_OK, data)
+
+
+@extend_schema(
+    tags=["Admin APIs"],
+    request=AdminAIAskSerializer,
+    responses={200: OpenApiTypes.OBJECT},
+    examples=[
+        OpenApiExample(
+            "Question only (default)",
+            value={"question": "How many active projects are there?"},
+            request_only=True,
+        ),
+    ],
+)
+class AdminAIAskAPIView(APIView):
+    """
+    Admin-only: read-only DB snapshot (ORM) is sent to the local Ollama server; the model answers in plain English.
+    No create/update/delete. Configure OLLAMA_BASE_URL, OLLAMA_MODEL (default: gemma4:e2b) in the environment.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        serializer = AdminAIAskSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        question = serializer.validated_data["question"]
+        project_id = serializer.validated_data.get("project_id")
+        milestone_id = serializer.validated_data.get("milestone_id")
+        task_id = serializer.validated_data.get("task_id")
+        if project_id is not None and not Project.objects.filter(id=project_id).exists():
+            return api_response(False, "Project not found.", status.HTTP_400_BAD_REQUEST, None)
+        if milestone_id is not None and not Milestone.objects.filter(id=milestone_id).exists():
+            return api_response(False, "Milestone not found.", status.HTTP_400_BAD_REQUEST, None)
+        if task_id is not None and not Task.objects.filter(id=task_id).exists():
+            return api_response(False, "Task not found.", status.HTTP_400_BAD_REQUEST, None)
+
+        context_text = build_readonly_context_text(
+            project_id=project_id,
+            milestone_id=milestone_id,
+            task_id=task_id,
+        )
+        system = (
+            "You are an admin's project assistant. The JSON includes an object ai_briefing with per_project_briefing: "
+            "use it for a concise status report in plain English. Prefer naming people from people_assigned_to_tasks, "
+            "milestones in progress (milestones_in_progress_by_name), task counts (completed vs remaining_not_done), "
+            "and project deadline with days_until_project_deadline. "
+            "The full task and milestone lists add detail when needed. You do not have file/website content—only this data. "
+            "If something is not in the JSON, say so. Do not invent names, numbers, or dates. "
+            "If the question could refer to more than one project in the data, list the short options and ask which one they mean."
+        )
+        user_msg = f"Data snapshot (JSON, read-only):\n{context_text}\n\nAdmin question: {question}"
+        try:
+            answer = ollama_chat(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_msg},
+                ],
+                base_url=getattr(settings, "OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+                model=getattr(settings, "OLLAMA_MODEL", "gemma4:e2b"),
+                timeout=int(getattr(settings, "OLLAMA_TIMEOUT", 120)),
+            )
+        except OllamaClientError as e:
+            logger.exception("Ollama request failed: %s", e)
+            return api_response(
+                False,
+                str(e) or "Ollama request failed.",
+                status.HTTP_502_BAD_GATEWAY,
+                None,
+            )
+        if not answer:
+            return api_response(
+                False,
+                "Ollama returned an empty response.",
+                status.HTTP_502_BAD_GATEWAY,
+                None,
+            )
+        return api_response(
+            True,
+            "AI answer generated.",
+            status.HTTP_200_OK,
+            {
+                "answer": answer,
+                "model": getattr(settings, "OLLAMA_MODEL", "gemma4:e2b"),
+            },
+        )
 
 
 @extend_schema(tags=["Admin APIs"], request=AdminPasswordResetSerializer)
@@ -1290,5 +1475,5 @@ class MyTasksAPIView(APIView):
     @extend_schema(responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
         tasks = Task.objects.filter(assigned_to=request.user).order_by("-created_at")
-        serializer = TaskSerializer(tasks, many=True)
+        serializer = TaskSerializer(tasks, many=True, context={"request": request})
         return api_response(True, "My tasks fetched.", status.HTTP_200_OK, serializer.data)

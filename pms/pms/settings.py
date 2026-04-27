@@ -171,6 +171,11 @@ SIMPLE_JWT = {
 # Allowed office email domain for login and user creation
 ALLOWED_OFFICE_EMAIL_DOMAIN = os.getenv("ALLOWED_OFFICE_EMAIL_DOMAIN", "@apparatus.solutions")
 
+# Local Ollama (admin AI assistant) — use /api/chat; model must exist in `ollama list`
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))
+
 # SMTP config (can be overridden by environment variables)
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
