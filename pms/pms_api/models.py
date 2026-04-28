@@ -57,6 +57,7 @@ class UserProfile(TimeStampedModel):
     experience_level = models.CharField(max_length=20, choices=ExperienceLevel.choices, blank=True)
     department = models.CharField(max_length=20, choices=Department.choices, blank=True)
     tech_stack = models.CharField(max_length=20, choices=TechStack.choices, blank=True)
+    tech_notes = models.TextField(blank=True, default="")
 
     def __str__(self):
         return f"{self.user.email} ({self.role})"
@@ -100,6 +101,7 @@ class Milestone(TimeStampedModel):
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="milestones")
     milestone_no = models.PositiveIntegerField()
     name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
     start_date = models.DateField()
     end_date = models.DateField()
     document = models.FileField(upload_to="milestone_docs/", null=True, blank=True)

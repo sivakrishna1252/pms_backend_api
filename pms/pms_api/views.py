@@ -6,6 +6,7 @@ from django.db.models import Count, Q, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from html import escape
+from datetime import datetime, time
 import logging
 import secrets
 from drf_spectacular.types import OpenApiTypes
@@ -13,7 +14,7 @@ from drf_spectacular.utils import OpenApiExample, extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -37,6 +38,7 @@ from .serializers import (
     FileAttachmentSerializer,
     FileUploadRequestSerializer,
     MilestoneSerializer,
+    MeUpdateSerializer,
     NotificationSerializer,
     ProjectSerializer,
     TaskSerializer,
@@ -115,7 +117,78 @@ def api_response(success, message, code, data=None):
     )
 
 
+def apply_automatic_task_status_rules():
+    """Keep derived task states in sync.
+    Rule: overdue non-final tasks automatically become DELAYED.
+    """
+    today = timezone.localdate()
+    Task.objects.filter(
+        deadline__isnull=False,
+        deadline__lt=today,
+        status__in=[Task.Status.NOT_STARTED, Task.Status.IN_PROGRESS, Task.Status.PAUSED],
+    ).update(status=Task.Status.DELAYED)
+
+
+def _sync_parent_statuses_for_task(task: Task) -> None:
+    """Keep milestone/project statuses aligned with underlying task statuses."""
+    today = timezone.localdate()
+
+    def _resolve_status(tasks_qs):
+        total = tasks_qs.count()
+        if total == 0:
+            return "NOT_STARTED"
+        completed = tasks_qs.filter(status=Task.Status.COMPLETED).count()
+        if completed == total:
+            return "COMPLETED"
+        delayed = tasks_qs.filter(
+            Q(status=Task.Status.DELAYED)
+            | (Q(deadline__isnull=False) & Q(deadline__lt=today) & ~Q(status=Task.Status.COMPLETED))
+        ).exists()
+        if delayed:
+            return "DELAYED"
+        active = tasks_qs.filter(status__in=[Task.Status.IN_PROGRESS, Task.Status.PAUSED]).exists()
+        if active:
+            return "IN_PROGRESS"
+        return "NOT_STARTED"
+
+    if task.milestone_id:
+        ms_tasks = Task.objects.filter(milestone_id=task.milestone_id)
+        ms_state = _resolve_status(ms_tasks)
+        milestone = task.milestone
+        if milestone:
+            mapped_ms_status = (
+                Milestone.Status.COMPLETED
+                if ms_state == "COMPLETED"
+                else Milestone.Status.DELAYED
+                if ms_state == "DELAYED"
+                else Milestone.Status.IN_PROGRESS
+                if ms_state == "IN_PROGRESS"
+                else Milestone.Status.NOT_STARTED
+            )
+            if milestone.status != mapped_ms_status:
+                milestone.status = mapped_ms_status
+                milestone.save(update_fields=["status"])
+
+    prj_tasks = Task.objects.filter(project_id=task.project_id)
+    prj_state = _resolve_status(prj_tasks)
+    project = task.project
+    if project:
+        mapped_project_status = (
+            Project.Status.COMPLETED
+            if prj_state == "COMPLETED"
+            else Project.Status.DELAYED
+            if prj_state == "DELAYED"
+            else Project.Status.ACTIVE
+            if prj_state == "IN_PROGRESS"
+            else Project.Status.PLANNED
+        )
+        if project.status != mapped_project_status:
+            project.status = mapped_project_status
+            project.save(update_fields=["status"])
+
+
 def build_admin_overview_payload(project_id=None, milestone_id=None, task_id=None):
+    apply_automatic_task_status_rules()
     tasks_qs = Task.objects.select_related("project", "milestone", "assigned_to", "created_by").all()
     if project_id:
         tasks_qs = tasks_qs.filter(project_id=project_id)
@@ -505,6 +578,18 @@ class MeAPIView(APIView):
         UserProfile.objects.get_or_create(user=request.user)
         return api_response(True, "User profile fetched.", status.HTTP_200_OK, UserSerializer(request.user).data)
 
+    @extend_schema(request=MeUpdateSerializer, responses={200: OpenApiTypes.OBJECT})
+    def patch(self, request):
+        serializer = MeUpdateSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        user = serializer.update(request.user, serializer.validated_data)
+        payload = UserSerializer(user).data
+        payload["password_updated"] = bool(serializer.validated_data.get("new_password"))
+        message = "Profile updated successfully."
+        if payload["password_updated"]:
+            message = "Profile and password updated successfully."
+        return api_response(True, message, status.HTTP_200_OK, payload)
+
 
 
 
@@ -513,7 +598,11 @@ class MeAPIView(APIView):
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all().order_by("-date_joined")
     pagination_class = StandardResultsSetPagination
-    permission_classes = [IsAuthenticated, IsAdmin]
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        # Portal list: hide Django admin / staff accounts; only app-managed users.
+        return super().get_queryset().filter(is_superuser=False, is_staff=False)
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -522,14 +611,25 @@ class UserViewSet(viewsets.ModelViewSet):
             return UserUpdateSerializer
         return UserSerializer
 
+    def get_permissions(self):
+        if self.action in {"list", "retrieve"}:
+            return [IsAuthenticated(), IsAdminOrBA()]
+        return [IsAuthenticated(), IsAdmin()]
+
     def create(self, request, *args, **kwargs):
         raw_password = request.data.get("password")
         serializer = UserCreateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        payload = UserSerializer(user).data
+        message = "User created successfully."
         if raw_password:
             send_user_welcome_email(user, raw_password)
-        return api_response(True, "User created successfully.", status.HTTP_201_CREATED, UserSerializer(user).data)
+            message = "User created successfully. Mail sent successfully."
+            payload["mail_triggered"] = True
+        else:
+            payload["mail_triggered"] = False
+        return api_response(True, message, status.HTTP_201_CREATED, payload)
 
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop("partial", False)
@@ -538,9 +638,15 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         raw_password = serializer.validated_data.get("password")
+        payload = UserSerializer(user).data
+        message = "User updated successfully."
         if raw_password:
             send_user_password_changed_email(user, raw_password)
-        return api_response(True, "User updated successfully.", status.HTTP_200_OK, UserSerializer(user).data)
+            message = "User updated successfully. Mail sent successfully."
+            payload["mail_triggered"] = True
+        else:
+            payload["mail_triggered"] = False
+        return api_response(True, message, status.HTTP_200_OK, payload)
 
     def partial_update(self, request, *args, **kwargs):
         kwargs["partial"] = True
@@ -556,7 +662,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
     pagination_class = StandardResultsSetPagination
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -567,8 +673,10 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action == "destroy":
             return [IsAuthenticated(), IsAdmin()]
-        if self.action in {"create", "update", "partial_update", "request_deadline_change", "request_delete"}:
+        if self.action in {"create", "update", "partial_update", "request_deadline_change"}:
             return [IsAuthenticated(), IsAdminOrBA()]
+        if self.action == "request_delete":
+            return [IsAuthenticated(), IsAdmin()]
         return [IsAuthenticated()]
 
     def perform_create(self, serializer):
@@ -599,6 +707,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             profile__role=UserProfile.Roles.ADMIN,
             profile__status=UserProfile.Status.ACTIVE,
         )
+        admin_emails = [user.email for user in admin_users if user.email]
         for admin_user in admin_users:
             Notification.objects.create(
                 user=admin_user,
@@ -612,24 +721,30 @@ class ProjectViewSet(viewsets.ModelViewSet):
         send_project_change_request_email(
             project=project,
             requester=request.user,
-            admin_emails=[user.email for user in admin_users if user.email],
+            admin_emails=admin_emails,
             request_type="DEADLINE_CHANGE",
             new_deadline=new_deadline,
             reason=reason,
         )
+        mail_triggered = bool(admin_emails)
         return api_response(
             True,
-            "Project deadline change request sent to admin.",
+            "Project deadline change request sent to admin." + (" Mail sent successfully." if mail_triggered else ""),
             status.HTTP_200_OK,
-            {"project_id": project.id, "new_deadline": new_deadline, "reason": reason},
+            {
+                "project_id": project.id,
+                "new_deadline": new_deadline,
+                "reason": reason,
+                "mail_triggered": mail_triggered,
+            },
         )
 
     @extend_schema(request=DeleteRequestSerializer, responses={200: OpenApiTypes.OBJECT})
     @action(detail=True, methods=["post"], url_path="request-delete")
     def request_delete(self, request, pk=None):
         project = self.get_object()
-        if user_role(request.user) != UserProfile.Roles.BA:
-            return api_response(False, "Only BA can request project delete.", status.HTTP_403_FORBIDDEN)
+        if user_role(request.user) != UserProfile.Roles.ADMIN:
+            return api_response(False, "Only Admin can perform project delete action.", status.HTTP_403_FORBIDDEN)
 
         serializer = DeleteRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -639,6 +754,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             profile__role=UserProfile.Roles.ADMIN,
             profile__status=UserProfile.Status.ACTIVE,
         )
+        admin_emails = [user.email for user in admin_users if user.email]
         for admin_user in admin_users:
             Notification.objects.create(
                 user=admin_user,
@@ -652,15 +768,16 @@ class ProjectViewSet(viewsets.ModelViewSet):
         send_project_change_request_email(
             project=project,
             requester=request.user,
-            admin_emails=[user.email for user in admin_users if user.email],
+            admin_emails=admin_emails,
             request_type="DELETE",
             reason=reason,
         )
+        mail_triggered = bool(admin_emails)
         return api_response(
             True,
-            "Project delete request sent to admin.",
+            "Project delete request sent to admin." + (" Mail sent successfully." if mail_triggered else ""),
             status.HTTP_200_OK,
-            {"project_id": project.id, "reason": reason},
+            {"project_id": project.id, "reason": reason, "mail_triggered": mail_triggered},
         )
 
 
@@ -713,6 +830,7 @@ class TaskViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser]
 
     def get_queryset(self):
+        apply_automatic_task_status_rules()
         user = self.request.user
         queryset = super().get_queryset()
         if not user.is_authenticated:
@@ -770,12 +888,17 @@ class TaskViewSet(viewsets.ModelViewSet):
             if milestone and milestone.created_by_id not in allowed_creator_ids:
                 raise PermissionDenied("BA can use milestones created by Admin or by self only.")
 
+    def _reset_mail_state(self):
+        self._mail_triggered = False
+
     def perform_create(self, serializer):
+        self._reset_mail_state()
         project = serializer.validated_data.get("project")
         milestone = serializer.validated_data.get("milestone")
         self._validate_project_milestone_scope(project, milestone)
         self._validate_assignee(serializer.validated_data.get("assigned_to"))
         task = serializer.save(created_by=self.request.user)
+        _sync_parent_statuses_for_task(task)
         if task.assigned_to and task.assigned_to.email:
             Notification.objects.create(
                 user=task.assigned_to,
@@ -786,18 +909,35 @@ class TaskViewSet(viewsets.ModelViewSet):
                 ref_id=task.id,
             )
             send_task_assignment_email(task.assigned_to, task)
+            self._mail_triggered = True
 
     def create(self, request, *args, **kwargs):
-        return super().create(request, *args, **kwargs)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        payload = dict(serializer.data)
+        payload["mail_triggered"] = bool(getattr(self, "_mail_triggered", False))
+        msg = "Task created successfully."
+        if payload["mail_triggered"]:
+            msg = "Task created successfully. Mail sent successfully."
+        return api_response(True, msg, status.HTTP_201_CREATED, payload)
 
     def perform_update(self, serializer):
+        self._reset_mail_state()
         previous_assignee_id = getattr(serializer.instance, "assigned_to_id", None)
         project = serializer.validated_data.get("project", serializer.instance.project)
         milestone = serializer.validated_data.get("milestone", serializer.instance.milestone)
         self._validate_project_milestone_scope(project, milestone)
         assignee = serializer.validated_data.get("assigned_to", serializer.instance.assigned_to)
         self._validate_assignee(assignee)
+        requested_status = serializer.validated_data.get("status", serializer.instance.status)
+        if (
+            requested_status == Task.Status.COMPLETED
+            and TimeLog.objects.filter(task=serializer.instance, end_time__isnull=True).exists()
+        ):
+            raise ValidationError({"status": "Stop the active timer first, then mark task as completed."})
         task = serializer.save()
+        _sync_parent_statuses_for_task(task)
         if assignee and assignee.email and assignee.id != previous_assignee_id:
             Notification.objects.create(
                 user=assignee,
@@ -808,12 +948,36 @@ class TaskViewSet(viewsets.ModelViewSet):
                 ref_id=task.id,
             )
             send_task_assignment_email(assignee, task)
+            self._mail_triggered = True
 
     def update(self, request, *args, **kwargs):
-        return super().update(request, *args, **kwargs)
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        payload = dict(serializer.data)
+        payload["mail_triggered"] = bool(getattr(self, "_mail_triggered", False))
+        msg = "Task updated successfully."
+        if payload["mail_triggered"]:
+            msg = "Task updated successfully. Mail sent successfully."
+        return api_response(True, msg, status.HTTP_200_OK, payload)
 
     def partial_update(self, request, *args, **kwargs):
-        return super().partial_update(request, *args, **kwargs)
+        kwargs["partial"] = True
+        return self.update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        task = self.get_object()
+        task_id = task.id
+        self.perform_destroy(task)
+        _sync_parent_statuses_for_task(task)
+        return api_response(
+            True,
+            "Task deleted successfully.",
+            status.HTTP_200_OK,
+            {"task_id": task_id},
+        )
 
     @action(detail=True, methods=["post"])
     def assign(self, request, pk=None):
@@ -838,9 +1002,15 @@ class TaskViewSet(viewsets.ModelViewSet):
         send_task_assignment_email(assignee, task)
         return api_response(
             True,
-            "Task assigned successfully.",
+            "Task assigned successfully. Mail sent successfully.",
             status.HTTP_200_OK,
-            {"task_id": task.id, "task_name": task.title, "assigned_id": assignee.id, "emp_name": assignee.first_name},
+            {
+                "task_id": task.id,
+                "task_name": task.title,
+                "assigned_id": assignee.id,
+                "emp_name": assignee.first_name,
+                "mail_triggered": True,
+            },
         )
 
     @action(detail=True, methods=["post"])
@@ -853,6 +1023,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         TimeLog.objects.create(task=task, user=request.user, start_time=timezone.now())
         task.status = Task.Status.IN_PROGRESS
         task.save(update_fields=["status"])
+        _sync_parent_statuses_for_task(task)
         return api_response(True, "Task started.", status.HTTP_200_OK, {"task_id": task.id, "status": task.status})
 
     @action(detail=True, methods=["post"])
@@ -864,6 +1035,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         log.stop(source=TimeLog.Source.MANUAL_PAUSE)
         task.status = Task.Status.PAUSED
         task.save(update_fields=["status", "total_time_spent_seconds"])
+        _sync_parent_statuses_for_task(task)
         return api_response(True, "Task paused.", status.HTTP_200_OK, {"task_id": task.id, "status": task.status})
 
     @action(detail=True, methods=["post"])
@@ -873,6 +1045,10 @@ class TaskViewSet(viewsets.ModelViewSet):
         if not log:
             return api_response(False, "No active timer found for this task.", status.HTTP_400_BAD_REQUEST)
         log.stop(source=TimeLog.Source.MANUAL_STOP)
+        if task.status != Task.Status.COMPLETED:
+            task.status = Task.Status.PAUSED
+            task.save(update_fields=["status", "total_time_spent_seconds"])
+        _sync_parent_statuses_for_task(task)
         if user_role(request.user) == UserProfile.Roles.EMPLOYEE:
             return api_response(
                 True,
@@ -921,8 +1097,19 @@ class TaskViewSet(viewsets.ModelViewSet):
         status_value = request.data.get("status")
         if status_value not in Task.Status.values:
             return api_response(False, "Invalid status.", status.HTTP_400_BAD_REQUEST)
+        if (
+            status_value == Task.Status.COMPLETED
+            and TimeLog.objects.filter(task=task, end_time__isnull=True).exists()
+        ):
+            return api_response(
+                False,
+                "Stop the active timer first, then mark task as completed.",
+                status.HTTP_400_BAD_REQUEST,
+            )
         task.status = status_value
         task.save(update_fields=["status"])
+        _sync_parent_statuses_for_task(task)
+        mail_triggered = False
         if status_value == Task.Status.COMPLETED and task.created_by:
             Notification.objects.create(
                 user=task.created_by,
@@ -933,8 +1120,17 @@ class TaskViewSet(viewsets.ModelViewSet):
                 ref_id=task.id,
             )
             send_task_completed_email(task, request.user)
+            mail_triggered = True
         return api_response(
-            True, "Task status updated.", status.HTTP_200_OK, {"task_id": task.id, "task_name": task.title, "status": task.status}
+            True,
+            "Task status updated." + (" Mail sent successfully." if mail_triggered else ""),
+            status.HTTP_200_OK,
+            {
+                "task_id": task.id,
+                "task_name": task.title,
+                "status": task.status,
+                "mail_triggered": mail_triggered,
+            },
         )
 
     @extend_schema(request=DeadlineChangeRequestSerializer, responses={200: OpenApiTypes.OBJECT})
@@ -953,6 +1149,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         new_deadline = serializer.validated_data.get("new_deadline")
         reason = serializer.validated_data.get("reason", "")
         owner = task.created_by
+        mail_triggered = False
 
         if owner:
             Notification.objects.create(
@@ -970,12 +1167,18 @@ class TaskViewSet(viewsets.ModelViewSet):
                 new_deadline=new_deadline,
                 reason=reason,
             )
+            mail_triggered = True
 
         return api_response(
             True,
-            "Task deadline change request sent.",
+            "Task deadline change request sent." + (" Mail sent successfully." if mail_triggered else ""),
             status.HTTP_200_OK,
-            {"task_id": task.id, "new_deadline": new_deadline, "reason": reason},
+            {
+                "task_id": task.id,
+                "new_deadline": new_deadline,
+                "reason": reason,
+                "mail_triggered": mail_triggered,
+            },
         )
 
 
@@ -1086,7 +1289,19 @@ class DashboardAPIView(APIView):
             data = build_admin_overview_payload()
             return api_response(True, "Admin dashboard fetched (same as admin overview).", status.HTTP_200_OK, data)
         if user_role(user) == UserProfile.Roles.BA:
-            ba_tasks_qs = Task.objects.filter(created_by=user).select_related("project", "milestone", "assigned_to")
+            allowed_creator_ids = [user.id]
+            admin_ids = list(
+                User.objects.filter(
+                    profile__role=UserProfile.Roles.ADMIN,
+                    profile__status=UserProfile.Status.ACTIVE,
+                ).values_list("id", flat=True)
+            )
+            allowed_creator_ids.extend(admin_ids)
+
+            # BA dashboard should include BA-created + Admin-created scope.
+            ba_tasks_qs = Task.objects.filter(created_by_id__in=allowed_creator_ids).select_related(
+                "project", "milestone", "assigned_to"
+            )
             employee_ids = list(ba_tasks_qs.exclude(assigned_to_id__isnull=True).values_list("assigned_to_id", flat=True).distinct())
             employee_rows = list(
                 User.objects.filter(id__in=employee_ids, profile__role=UserProfile.Roles.EMPLOYEE)
@@ -1153,12 +1368,98 @@ class DashboardAPIView(APIView):
                         ],
                     }
                 )
+            task_ids = list(ba_tasks_qs.values_list("id", flat=True))
+            project_ids = list(ba_tasks_qs.values_list("project_id", flat=True).distinct())
+            milestone_ids = list(
+                ba_tasks_qs.exclude(milestone_id__isnull=True).values_list("milestone_id", flat=True).distinct()
+            )
+            project_qs = Project.objects.filter(id__in=project_ids)
+            milestone_qs = Milestone.objects.filter(id__in=milestone_ids)
+            task_status_counts = {
+                "not_started": ba_tasks_qs.filter(status=Task.Status.NOT_STARTED).count(),
+                "in_progress": ba_tasks_qs.filter(status=Task.Status.IN_PROGRESS).count(),
+                "paused": ba_tasks_qs.filter(status=Task.Status.PAUSED).count(),
+                "completed": ba_tasks_qs.filter(status=Task.Status.COMPLETED).count(),
+                "delayed": ba_tasks_qs.filter(status=Task.Status.DELAYED).count(),
+                "blocked": ba_tasks_qs.filter(status=Task.Status.BLOCKED).count(),
+            }
+            logs_qs = (
+                TimeLog.objects.select_related("task", "task__project", "user")
+                .filter(task_id__in=task_ids)
+                .order_by("-start_time")
+            )
+            recent_activity = []
+            for log in logs_qs[:80]:
+                user_name = log.user.get_full_name().strip() or log.user.email
+                recent_activity.append(
+                    {
+                        "action": "STARTED",
+                        "employee_name": user_name,
+                        "task_id": log.task_id,
+                        "task_title": log.task.title,
+                        "project_name": log.task.project.name,
+                        "timestamp": log.start_time,
+                    }
+                )
+                if log.end_time:
+                    action = "PAUSED" if log.source == TimeLog.Source.MANUAL_PAUSE else "STOPPED"
+                    recent_activity.append(
+                        {
+                            "action": action,
+                            "employee_name": user_name,
+                            "task_id": log.task_id,
+                            "task_title": log.task.title,
+                            "project_name": log.task.project.name,
+                            "timestamp": log.end_time,
+                        }
+                    )
+            recent_activity.sort(key=lambda item: item["timestamp"], reverse=True)
             data = {
                 "tasks_created": ba_tasks_qs.count(),
                 "tasks_completed": ba_tasks_qs.filter(status=Task.Status.COMPLETED).count(),
                 "tasks_in_progress": ba_tasks_qs.filter(status=Task.Status.IN_PROGRESS).count(),
                 "tasks_delayed": ba_tasks_qs.filter(status=Task.Status.DELAYED).count(),
                 "assigned_employees": len(employee_ids),
+                "overview": {
+                    "projects_count": project_qs.count(),
+                    "tasks_count": ba_tasks_qs.count(),
+                    "employee_count": len(employee_ids),
+                },
+                "task_status_counts": task_status_counts,
+                "projects": [
+                    {
+                        "id": project.id,
+                        "name": project.name,
+                        "status": project.status,
+                        "start_date": project.start_date,
+                        "deadline": project.deadline,
+                    }
+                    for project in project_qs
+                ],
+                "milestones": [
+                    {
+                        "id": milestone.id,
+                        "milestone_no": milestone.milestone_no,
+                        "name": milestone.name,
+                        "project_id": milestone.project_id,
+                        "status": milestone.status,
+                        "start_date": milestone.start_date,
+                        "end_date": milestone.end_date,
+                    }
+                    for milestone in milestone_qs
+                ],
+                "tasks": [
+                    {
+                        "id": task.id,
+                        "title": task.title,
+                        "project_id": task.project_id,
+                        "project_name": task.project.name,
+                        "milestone_name": task.milestone.name if task.milestone else None,
+                        "status": task.status,
+                    }
+                    for task in ba_tasks_qs.order_by("-updated_at")
+                ],
+                "recent_activity": recent_activity[:20],
                 "employee_summary": employee_summary,
             }
             return api_response(True, "BA dashboard fetched.", status.HTTP_200_OK, data)
@@ -1178,6 +1479,7 @@ class WorkTrackingAPIView(APIView):
 
     @extend_schema(responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
+        apply_automatic_task_status_rules()
         role = user_role(request.user)
         if role not in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
             return api_response(False, "Only Admin or BA can access work tracking.", status.HTTP_403_FORBIDDEN)
@@ -1188,7 +1490,15 @@ class WorkTrackingAPIView(APIView):
             .order_by("-updated_at")
         )
         if role == UserProfile.Roles.BA:
-            tasks_qs = tasks_qs.filter(created_by=request.user)
+            allowed_creator_ids = [request.user.id]
+            admin_ids = list(
+                User.objects.filter(
+                    profile__role=UserProfile.Roles.ADMIN,
+                    profile__status=UserProfile.Status.ACTIVE,
+                ).values_list("id", flat=True)
+            )
+            allowed_creator_ids.extend(admin_ids)
+            tasks_qs = tasks_qs.filter(created_by_id__in=allowed_creator_ids)
 
         employee_id = request.query_params.get("employee_id")
         project_id = request.query_params.get("project_id")
@@ -1282,8 +1592,84 @@ class WorkTrackingAPIView(APIView):
                 "stopped_count": len([item for item in records if item["timer_state"] == "STOPPED"]),
             },
             "work_tracking": records,
+            "recent_activity": self._build_recent_activity(tasks_qs, role, request.user),
         }
         return api_response(True, "Work tracking fetched.", status.HTTP_200_OK, data)
+
+    def _build_recent_activity(self, tasks_qs, role, actor):
+        task_ids = list(tasks_qs.values_list("id", flat=True))
+        if not task_ids:
+            return []
+        now_local = timezone.localtime()
+        day_start = datetime.combine(now_local.date(), time.min, tzinfo=now_local.tzinfo)
+        reset_time = datetime.combine(now_local.date(), time(hour=22), tzinfo=now_local.tzinfo)
+        window_start = reset_time if now_local >= reset_time else day_start
+
+        logs_qs = (
+            TimeLog.objects.select_related("task", "task__project", "user")
+            .filter(task_id__in=task_ids)
+            .filter(Q(start_time__gte=window_start) | Q(end_time__gte=window_start))
+            .order_by("-start_time")
+        )
+        if role == UserProfile.Roles.BA:
+            logs_qs = logs_qs.filter(task__created_by=actor)
+
+        events = []
+        for log in logs_qs[:80]:
+            user_name = log.user.get_full_name().strip() or log.user.email
+            events.append(
+                {
+                    "action": "STARTED",
+                    "employee_name": user_name,
+                    "task_id": log.task_id,
+                    "task_title": log.task.title,
+                    "project_name": log.task.project.name,
+                    "timestamp": log.start_time,
+                }
+            )
+            if log.end_time:
+                if log.source == TimeLog.Source.MANUAL_PAUSE:
+                    action = "PAUSED"
+                else:
+                    action = "STOPPED"
+                events.append(
+                    {
+                        "action": action,
+                        "employee_name": user_name,
+                        "task_id": log.task_id,
+                        "task_title": log.task.title,
+                        "project_name": log.task.project.name,
+                        "timestamp": log.end_time,
+                    }
+                )
+
+        completed_qs = Task.objects.select_related("assigned_to", "project").filter(
+            id__in=task_ids,
+            status=Task.Status.COMPLETED,
+            updated_at__gte=window_start,
+        )
+        if role == UserProfile.Roles.BA:
+            completed_qs = completed_qs.filter(created_by=actor)
+        for task in completed_qs[:40]:
+            employee = task.assigned_to or task.created_by
+            employee_name = (
+                employee.get_full_name().strip() or employee.email
+                if employee
+                else "Employee"
+            )
+            events.append(
+                {
+                    "action": "COMPLETED",
+                    "employee_name": employee_name,
+                    "task_id": task.id,
+                    "task_title": task.title,
+                    "project_name": task.project.name,
+                    "timestamp": task.updated_at,
+                }
+            )
+
+        events.sort(key=lambda item: item["timestamp"], reverse=True)
+        return events[:20]
 
 
 @extend_schema(tags=["Admin APIs"])
@@ -1433,7 +1819,12 @@ class AdminForgotPasswordRequestOTPAPIView(APIView):
         cache.set(admin_otp_cache_key(email), otp, timeout=ADMIN_RESET_OTP_TTL_SECONDS)
         send_admin_reset_otp_email(admin_user, otp)
 
-        return api_response(True, "Admin OTP sent successfully.", status.HTTP_200_OK, {"email": email})
+        return api_response(
+            True,
+            "Admin OTP sent successfully. Mail sent successfully.",
+            status.HTTP_200_OK,
+            {"email": email, "mail_triggered": True},
+        )
 
 
 @extend_schema(tags=["Common APIs"])

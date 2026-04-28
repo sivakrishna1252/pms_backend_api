@@ -85,6 +85,7 @@ class UserSerializer(serializers.ModelSerializer):
     experience_level = serializers.SerializerMethodField()
     department = serializers.SerializerMethodField()
     tech_stack = serializers.SerializerMethodField()
+    tech_notes = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -98,6 +99,7 @@ class UserSerializer(serializers.ModelSerializer):
             "experience_level",
             "department",
             "tech_stack",
+            "tech_notes",
             "date_joined",
             "last_login",
         ]
@@ -123,8 +125,9 @@ class UserSerializer(serializers.ModelSerializer):
         profile = getattr(obj, "profile", None)
         return getattr(profile, "tech_stack", None)
 
-
-
+    def get_tech_notes(self, obj) -> str:
+        profile = getattr(obj, "profile", None)
+        return (getattr(profile, "tech_notes", None) or "") or ""
 
 
 #user create serializer
@@ -155,6 +158,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         choices=UserProfile.TechStack.choices, required=False, allow_blank=True, default=""
         , normalizer=lambda v: normalize_choice_input(v, UserProfile.TechStack)
     )
+    tech_notes = serializers.CharField(required=False, allow_blank=True, default="", max_length=4000)
 
     class Meta:
         model = User
@@ -169,6 +173,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
             "experience_level",
             "department",
             "tech_stack",
+            "tech_notes",
         ]
         read_only_fields = ["id"]
 
@@ -194,23 +199,34 @@ class UserCreateSerializer(serializers.ModelSerializer):
         role = attrs.get("role")
         experience_level = attrs.get("experience_level", "")
         department = attrs.get("department", "")
-        tech_stack = attrs.get("tech_stack", "")
+        tech_stack = (attrs.get("tech_stack") or "").strip()
+        tech_notes_stripped = (attrs.get("tech_notes") or "").strip()
 
         if role == UserProfile.Roles.EMPLOYEE:
-            required_fields = {
+            required_personal = {
                 "experience_level": experience_level,
                 "department": department,
-                "tech_stack": tech_stack,
             }
-            missing = [field for field, value in required_fields.items() if not value]
-            if missing:
+            missing_personal = [field for field, value in required_personal.items() if not value]
+            if missing_personal:
                 raise serializers.ValidationError(
-                    {field: "This field is required when role is EMPLOYEE." for field in missing}
+                    {
+                        field: "This field is required when role is EMPLOYEE."
+                        for field in missing_personal
+                    }
                 )
+            if not tech_stack and not tech_notes_stripped:
+                raise serializers.ValidationError(
+                    {"tech_stack": "Select at least one tech stack or add notes for employees."}
+                )
+            attrs["tech_notes"] = attrs.get("tech_notes") or ""
+            if tech_stack == "":
+                attrs["tech_stack"] = UserProfile.TechStack.PYTHON
         else:
             attrs["experience_level"] = ""
             attrs["department"] = ""
             attrs["tech_stack"] = ""
+            attrs["tech_notes"] = ""
 
         return attrs
 
@@ -220,6 +236,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         experience_level = validated_data.pop("experience_level", "")
         department = validated_data.pop("department", "")
         tech_stack = validated_data.pop("tech_stack", "")
+        tech_notes = validated_data.pop("tech_notes", "")
         password = validated_data.pop("password")
         user = User(**validated_data)
         user.username = validated_data["email"]
@@ -237,6 +254,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
             experience_level=experience_level,
             department=department,
             tech_stack=tech_stack,
+            tech_notes=tech_notes or "",
         )
         return user
 
@@ -275,6 +293,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         allow_blank=True,
         normalizer=lambda v: normalize_choice_input(v, UserProfile.TechStack),
     )
+    tech_notes = serializers.CharField(required=False, allow_blank=True, max_length=4000)
 
     class Meta:
         model = User
@@ -289,6 +308,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             "experience_level",
             "department",
             "tech_stack",
+            "tech_notes",
         ]
         read_only_fields = ["id"]
 
@@ -308,6 +328,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         experience_level = validated_data.pop("experience_level", None)
         department = validated_data.pop("department", None)
         tech_stack = validated_data.pop("tech_stack", None)
+        tech_notes = validated_data.pop("tech_notes", None)
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
@@ -332,6 +353,9 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         if tech_stack is not None:
             profile.tech_stack = tech_stack
             profile_changed_fields.append("tech_stack")
+        if tech_notes is not None:
+            profile.tech_notes = tech_notes
+            profile_changed_fields.append("tech_notes")
 
         target_role = role if role is not None else profile.role
         if target_role != UserProfile.Roles.EMPLOYEE:
@@ -344,13 +368,18 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             if profile.tech_stack:
                 profile.tech_stack = ""
                 profile_changed_fields.append("tech_stack")
+            if profile.tech_notes:
+                profile.tech_notes = ""
+                profile_changed_fields.append("tech_notes")
         else:
             missing_employee_fields = []
             if not profile.experience_level:
                 missing_employee_fields.append("experience_level")
             if not profile.department:
                 missing_employee_fields.append("department")
-            if not profile.tech_stack:
+            tn = (profile.tech_notes or "").strip()
+            ts = (profile.tech_stack or "").strip()
+            if not ts and not tn:
                 missing_employee_fields.append("tech_stack")
             if missing_employee_fields:
                 raise serializers.ValidationError(
@@ -420,6 +449,7 @@ class MilestoneSerializer(serializers.ModelSerializer):
             "project",
             "project_name",
             "name",
+            "description",
             "start_date",
             "end_date",
             "document",
@@ -692,6 +722,55 @@ class AuthResponseSerializer(serializers.Serializer):
 
 class RefreshTokenRequestSerializer(serializers.Serializer):
     refresh = serializers.CharField()
+
+
+class MeUpdateSerializer(serializers.Serializer):
+    first_name = serializers.CharField(required=False, allow_blank=True, max_length=150)
+    last_name = serializers.CharField(required=False, allow_blank=True, max_length=150)
+    email = serializers.EmailField(required=False)
+    current_password = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    new_password = serializers.CharField(required=False, allow_blank=True, min_length=6, write_only=True)
+
+    def validate_email(self, value):
+        allowed_domain = getattr(settings, "ALLOWED_OFFICE_EMAIL_DOMAIN", "@apparatus.solutions")
+        if not value.lower().endswith(allowed_domain):
+            raise serializers.ValidationError(f"Only office email domain ({allowed_domain}) is allowed.")
+        user = self.context["request"].user
+        existing = User.objects.filter(username__iexact=value).exclude(id=user.id).first()
+        if existing:
+            raise serializers.ValidationError("This email is already registered. Use a different email.")
+        return value
+
+    def validate(self, attrs):
+        new_password = attrs.get("new_password", "")
+        current_password = attrs.get("current_password", "")
+        user = self.context["request"].user
+        if new_password:
+            if not current_password:
+                raise serializers.ValidationError({"current_password": "Current password is required."})
+            if not user.check_password(current_password):
+                raise serializers.ValidationError({"current_password": "Current password is incorrect."})
+        return attrs
+
+    def update(self, instance, validated_data):
+        email = validated_data.get("email")
+        if "first_name" in validated_data:
+            instance.first_name = validated_data["first_name"]
+        if "last_name" in validated_data:
+            instance.last_name = validated_data["last_name"]
+        if email is not None:
+            instance.email = email
+            instance.username = email
+        update_fields = ["first_name", "last_name"]
+        if email is not None:
+            update_fields.extend(["email", "username"])
+        instance.save(update_fields=list(dict.fromkeys(update_fields)))
+
+        new_password = validated_data.get("new_password")
+        if new_password:
+            instance.set_password(new_password)
+            instance.save(update_fields=["password"])
+        return instance
 
 
 class AdminPasswordResetSerializer(serializers.Serializer):

@@ -6,7 +6,8 @@ from django.core.management.base import BaseCommand
 from django.core.mail import send_mail
 from django.utils import timezone
 
-from pms_api.models import Milestone, Project, Task, TimeLog, UserProfile
+from pms_api.models import Milestone, Notification, Project, Task, TimeLog, UserProfile
+from pms_api.views import _send_styled_email
 
 
 User = get_user_model()
@@ -15,11 +16,18 @@ User = get_user_model()
 class Command(BaseCommand):
     help = "Send project/milestone/task deadline alert emails."
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--force-auto-stop",
+            action="store_true",
+            help="Force auto-stop active timers immediately (ignore cutoff time).",
+        )
+
     def handle(self, *args, **options):
         today = timezone.localdate()
         tomorrow = today + timedelta(days=1)
 
-        self._auto_stop_active_timers_at_8pm()
+        self._auto_stop_active_timers(force=bool(options.get("force_auto_stop")))
         self._send_project_deadline_alerts(today, tomorrow)
         self._send_milestone_overdue_alerts(today)
         self._send_task_overdue_alerts(today)
@@ -37,9 +45,16 @@ class Command(BaseCommand):
             fail_silently=False,
         )
 
-    def _auto_stop_active_timers_at_8pm(self):
+    def _auto_stop_active_timers(self, force=False):
+        cutoff_hour = int(getattr(settings, "AUTO_STOP_CUTOFF_HOUR", 20))
+        cutoff_minute = int(getattr(settings, "AUTO_STOP_CUTOFF_MINUTE", 0))
+        cutoff_time = time(hour=cutoff_hour, minute=cutoff_minute)
+
         now_local = timezone.localtime()
-        if now_local.time() < time(hour=20, minute=0):
+        is_weekday = now_local.weekday() <= 4  # Monday=0 ... Friday=4
+        if not force and not is_weekday:
+            return
+        if not force and now_local.time() < cutoff_time:
             return
 
         active_logs = TimeLog.objects.select_related("task", "user").filter(end_time__isnull=True)
@@ -56,18 +71,19 @@ class Command(BaseCommand):
             stopped_by_user[user_email]["tasks"].append(log.task.title)
 
         for email, payload in stopped_by_user.items():
-            task_lines = "\n".join(f"- {title}" for title in payload["tasks"]) or "- N/A"
-            self._send_email(
-                subject="PMS Timer Auto-stopped at 8:00 PM",
-                message=(
-                    f"Hi {payload['name']},\n\n"
-                    "You had active task timer(s) after 8:00 PM, so PMS auto-stopped them.\n\n"
-                    "Auto-stopped tasks:\n"
-                    f"{task_lines}\n\n"
-                    "Please remember to stop your timer when work is finished.\n\n"
-                    "Regards,\nPMS Team"
+            task_lines = ", ".join(payload["tasks"]) or "N/A"
+            _send_styled_email(
+                subject=f"PMS Timer Auto-stopped at {cutoff_hour:02d}:{cutoff_minute:02d}",
+                recipient_list=[email],
+                greeting=f"Hi {payload['name']},",
+                intro_text=(
+                    f"You had active task timer(s) after {cutoff_hour:02d}:{cutoff_minute:02d} "
+                    "(Mon-Fri), so PMS auto-stopped them."
                 ),
-                recipients=[email],
+                detail_rows=[
+                    ("Auto-stopped Tasks", task_lines),
+                    ("Reminder", "Please remember to stop your timer when work is finished."),
+                ],
             )
 
 
@@ -115,19 +131,39 @@ class Command(BaseCommand):
             status=Milestone.Status.COMPLETED
         )
         for milestone in overdue_milestones:
-            if milestone.status != Milestone.Status.DELAYED:
+            transitioned_to_delayed = milestone.status != Milestone.Status.DELAYED
+            if transitioned_to_delayed:
                 milestone.status = Milestone.Status.DELAYED
                 milestone.save(update_fields=["status"])
             owner = milestone.created_by
-            self._send_email(
-                subject=f"Milestone Delayed: {milestone.name}",
+            owner_email = getattr(owner, "email", None)
+            if not transitioned_to_delayed or not owner_email:
+                continue
+
+            Notification.objects.create(
+                user=owner,
+                type="MILESTONE_DELAYED",
+                title="Milestone Delayed",
                 message=(
-                    f"Milestone '{milestone.name}' in project '{milestone.project.name}' crossed end date "
-                    f"({milestone.end_date}) and is still not completed.\n"
-                    f"Current status changed to: {milestone.status}\n"
-                    "Please review and update milestone plan."
+                    f"Milestone '{milestone.name}' in project '{milestone.project.name}' is delayed."
                 ),
-                recipients=[getattr(owner, "email", None)],
+                ref_type=Notification.RefType.MILESTONE,
+                ref_id=milestone.id,
+            )
+            _send_styled_email(
+                subject=f"Milestone Delayed: {milestone.name}",
+                recipient_list=[owner_email],
+                greeting=f"Hi {owner.first_name or owner.username},",
+                intro_text=(
+                    f"Your milestone '{milestone.name}' in project '{milestone.project.name}' "
+                    f"crossed its end date and is marked as Delayed."
+                ),
+                detail_rows=[
+                    ("Milestone", milestone.name),
+                    ("Project", milestone.project.name),
+                    ("End Date", str(milestone.end_date)),
+                    ("Current Status", milestone.status),
+                ],
             )
 
     def _send_task_overdue_alerts(self, today):

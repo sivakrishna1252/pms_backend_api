@@ -184,3 +184,7 @@ EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True").lower() == "true"
 EMAIL_HOST_USER = os.getenv("SMTP_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("SMTP_PASS", "")
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+
+# Auto-stop active timers cutoff (server local timezone via Django timezone.localtime()).
+AUTO_STOP_CUTOFF_HOUR = int(os.getenv("AUTO_STOP_CUTOFF_HOUR", "20"))
+AUTO_STOP_CUTOFF_MINUTE = int(os.getenv("AUTO_STOP_CUTOFF_MINUTE", "0"))
