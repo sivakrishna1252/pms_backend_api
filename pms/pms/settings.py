@@ -92,11 +92,15 @@ WSGI_APPLICATION = 'pms.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
-
+#
+# In Docker/Jenkins, mount a named volume and set DATABASE_PATH so SQLite survives container rebuilds
+# (e.g. DATABASE_PATH=/data/db.sqlite3 and -v some_volume:/data).
+_db_raw = os.getenv("DATABASE_PATH", "").strip()
+_sqlite_name = Path(_db_raw) if _db_raw else (BASE_DIR / "db.sqlite3")
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": _sqlite_name,
     }
 }
 

@@ -70,7 +70,16 @@ class AuthLoginSerializer(serializers.Serializer):
         allowed_domain = getattr(settings, "ALLOWED_OFFICE_EMAIL_DOMAIN", "@apparatus.solutions")
         if not attrs["email"].lower().endswith(allowed_domain):
             raise serializers.ValidationError(f"Only office emails ending with {allowed_domain} are allowed.")
-        user = authenticate(username=attrs["email"], password=attrs["password"])
+        email_norm = attrs["email"].strip().lower()
+        password = attrs["password"]
+
+        # Django User.username is the auth identifier; this app also accepts login by email field
+        # when username differs (e.g. username "siva", email "siva@apparatus.solutions").
+        user = authenticate(username=email_norm, password=password)
+        if not user:
+            candidate = User.objects.filter(email__iexact=email_norm).first()
+            if candidate:
+                user = authenticate(username=candidate.get_username(), password=password)
         if not user:
             raise serializers.ValidationError("Invalid credentials.")
         attrs["user"] = user
