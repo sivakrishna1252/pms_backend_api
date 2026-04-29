@@ -12,6 +12,9 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
 
+# Admin / DRF docs need collected static assets when DEBUG=False (gunicorn does not serve them by default).
+RUN python manage.py collectstatic --noinput
+
 RUN chown -R app:app /app
 USER app
 
