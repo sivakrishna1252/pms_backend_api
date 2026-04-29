@@ -12,15 +12,9 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
 
-# Admin / DRF docs need collected static assets when DEBUG=False (gunicorn does not serve them by default).
-RUN python manage.py collectstatic --noinput
-
-RUN chmod +x /app/scripts/docker-entrypoint.prod.sh
-
 RUN chown -R app:app /app
 USER app
 
 EXPOSE 8000
 
-# Migrations + optional DJANGO_SUPERUSER_* bootstrap + gunicorn
-CMD ["/app/scripts/docker-entrypoint.prod.sh"]
+CMD ["sh", "-c", "python manage.py migrate && gunicorn pms.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"]

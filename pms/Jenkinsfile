@@ -10,7 +10,6 @@ pipeline {
         ALLOWED_HOSTS_VALUE = "127.0.0.1,localhost,187.127.139.247"
         HOST_PORT = "6009"
         CONTAINER_PORT = "8000"
-        SQLITE_VOLUME = "pms_sqlite_data"
     }
 
     options {
@@ -66,14 +65,11 @@ pipeline {
                         fi
                     fi
                     docker rm -f ${APP_NAME} || true
-                    docker volume create ${SQLITE_VOLUME} || true
                     docker run -d \\
                       --name ${APP_NAME} \\
                       --restart unless-stopped \\
                       --env-file ${ENV_FILE} \\
                       -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" \\
-                      -e DATABASE_PATH=/data/db.sqlite3 \\
-                      -v ${SQLITE_VOLUME}:/data \\
                       -p ${HOST_PORT}:${CONTAINER_PORT} \\
                       ${IMAGE_NAME}:${BUILD_NUMBER}
                 """

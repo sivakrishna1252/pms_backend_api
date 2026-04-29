@@ -31,15 +31,6 @@ DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if host.strip() and host.strip() != ""]
 
-# Admin login POST over http://IP:port needs trusted origins (Django 4+). Comma-separated full origins.
-# Example: http://187.127.139.247:6009 (scheme + host + port, no path)
-csrf_origins_env = os.getenv("CSRF_TRUSTED_ORIGINS", "")
-CSRF_TRUSTED_ORIGINS = [
-    origin.strip()
-    for origin in csrf_origins_env.split(",")
-    if origin.strip()
-]
-
 
 # Application definition
 
@@ -92,15 +83,11 @@ WSGI_APPLICATION = 'pms.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
-#
-# In Docker/Jenkins, mount a named volume and set DATABASE_PATH so SQLite survives container rebuilds
-# (e.g. DATABASE_PATH=/data/db.sqlite3 and -v some_volume:/data).
-_db_raw = os.getenv("DATABASE_PATH", "").strip()
-_sqlite_name = Path(_db_raw) if _db_raw else (BASE_DIR / "db.sqlite3")
+
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": _sqlite_name,
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
 
@@ -140,8 +127,6 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = '/static/'
-# Collected assets for production (Docker `collectstatic`; served by WhiteNoise when DEBUG=False).
-STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
