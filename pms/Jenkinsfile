@@ -104,18 +104,7 @@ pipeline {
         stage('Ensure Superuser') {
             steps {
                 sh """
-                    docker exec ${APP_NAME} python manage.py shell -c "
-from django.contrib.auth import get_user_model;
-User = get_user_model();
-username='${DJANGO_SUPERUSER_USERNAME}';
-password='${DJANGO_SUPERUSER_PASSWORD}';
-email='${DJANGO_SUPERUSER_EMAIL}';
-if not User.objects.filter(username=username).exists():
-    User.objects.create_superuser(username, email, password)
-    print('Superuser created')
-else:
-    print('Superuser already exists')
-"
+                    docker exec ${APP_NAME} python manage.py ensure_superuser || true
                 """
             }
         }
@@ -123,7 +112,7 @@ else:
 
     post {
         success {
-            echo "Deployment successful: http://${ALLOWED_HOSTS_VALUE.split(',')[2]}:${HOST_PORT}/admin/"
+            echo "Deployment successful. App on port ${HOST_PORT} (configure /admin URL from ALLOWED_HOSTS)."
         }
         failure {
             echo "Pipeline failed. Check logs."
