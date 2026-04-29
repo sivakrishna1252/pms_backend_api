@@ -21,22 +21,6 @@ Stop containers:
 docker compose down
 ```
 
-### First-time dashboard admin (optional)
-
-Creates the sample login from the Postman section (`admin@apparatus.solutions` / `Admin@1234`) with `UserProfile` role **ADMIN**:
-
-```bash
-python manage.py bootstrap_dashboard_admin
-```
-
-From Docker (after the DB is reachable):
-
-```bash
-docker exec -it pms-web python manage.py bootstrap_dashboard_admin
-```
-
-Use `--force-password` if that user already exists and you need to reset the password.
-
 ### Production Docker (Gunicorn)
 
 Build and run production profile:

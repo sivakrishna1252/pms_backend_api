@@ -83,41 +83,13 @@ WSGI_APPLICATION = 'pms.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
-#
-# SQLite (default): omit DB_ENGINE or set DB_ENGINE=sqlite
-# PostgreSQL: set DB_ENGINE=postgresql and POSTGRES_* (or DB_NAME / DB_USER / …)
-_db_engine = os.getenv("DB_ENGINE", "sqlite").strip().lower()
-if _db_engine in ("postgres", "postgresql"):
-    _pg_options = {}
-    _sslmode = os.getenv("POSTGRES_SSLMODE", "").strip()
-    if _sslmode:
-        _pg_options["sslmode"] = _sslmode
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": os.getenv("POSTGRES_DB", os.getenv("DB_NAME", "pms")),
-            "USER": os.getenv("POSTGRES_USER", os.getenv("DB_USER", "postgres")),
-            "PASSWORD": os.getenv("POSTGRES_PASSWORD", os.getenv("DB_PASSWORD", "")),
-            "HOST": os.getenv("POSTGRES_HOST", os.getenv("DB_HOST", "127.0.0.1")),
-            "PORT": os.getenv("POSTGRES_PORT", os.getenv("DB_PORT", "5432")),
-            "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "0")),
-            **({"OPTIONS": _pg_options} if _pg_options else {}),
-        }
+
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
     }
-else:
-    _sqlite_raw = os.getenv("SQLITE_DB_PATH", "").strip()
-    if _sqlite_raw:
-        _sqlite_path = Path(_sqlite_raw)
-        if not _sqlite_path.is_absolute():
-            _sqlite_path = BASE_DIR / _sqlite_path
-    else:
-        _sqlite_path = BASE_DIR / "db.sqlite3"
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": _sqlite_path,
-        }
-    }
+}
 
 
 # Password validation

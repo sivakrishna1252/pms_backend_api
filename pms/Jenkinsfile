@@ -1,25 +1,16 @@
 pipeline {
     agent any
 
-    parameters {
-        booleanParam(
-            name: 'RUN_BOOTSTRAP_DASHBOARD_ADMIN',
-            defaultValue: false,
-            description: 'After deploy, run bootstrap_dashboard_admin --force-password (portal ADMIN from API docs). Enable once, then leave off.'
-        )
-    }
-
     environment {
         PROJECT_DIR = "pms"
         APP_NAME = "pms-web-prod"
         IMAGE_NAME = "pms-backend"
-        ENV_ID = "pms_backend_env"
         ENV_FILE = ".env"
         ALLOWED_HOSTS_VALUE = "127.0.0.1,localhost,187.127.139.247"
-        APP_PORT_DEFAULT = "6009"
+        HOST_PORT = "6009"
         CONTAINER_PORT = "8000"
-        // Host dir mounted at /app/dbdata in container — keep SQLite across redeploys (set SQLITE_DB_PATH=/app/dbdata/db.sqlite3 in .env).
-        SQLITE_HOST_DIR = "${WORKSPACE}/${PROJECT_DIR}/sqlite-data"
+        // Host path for SQLite so redeploys keep the same DB on the *Jenkins agent* (not your laptop).
+        SQLITE_ON_AGENT = "${WORKSPACE}/${PROJECT_DIR}/db.sqlite3"
     }
 
     options {
@@ -41,10 +32,8 @@ pipeline {
                     if [ ! -f ${ENV_FILE} ]; then
                         if [ -f .env.example ]; then
                             cp .env.example ${ENV_FILE}
-                            echo "${ENV_FILE} created from .env.example"
                         else
                             touch ${ENV_FILE}
-                            echo "${ENV_FILE} created as empty fallback"
                         fi
                     fi
                     docker build -f Dockerfile.prod -t ${IMAGE_NAME}:${BUILD_NUMBER} -t ${IMAGE_NAME}:latest .
@@ -63,55 +52,48 @@ pipeline {
 
         stage('Deploy') {
             steps {
-                script {
-                    def envPath = "${env.WORKSPACE}/${env.PROJECT_DIR}/${env.ENV_FILE}"
-                    def publishPort = "${env.APP_PORT_DEFAULT}"
-                    if (fileExists(envPath)) {
-                        def text = readFile(envPath)
-                        def matcher = (text =~ /(?m)^\s*APP_PORT\s*=\s*(\S+)/)
-                        if (matcher.find()) {
-                            publishPort = matcher.group(1).trim()
-                        }
-                    }
-                    env.PUBLISH_PORT = publishPort
-                }
                 sh """
                     cd ${PROJECT_DIR}
                     if [ ! -f ${ENV_FILE} ]; then
                         if [ -f .env.example ]; then
                             cp .env.example ${ENV_FILE}
-                            echo "${ENV_FILE} created from .env.example"
                         else
                             touch ${ENV_FILE}
-                            echo "${ENV_FILE} created as empty fallback"
                         fi
                     fi
-                    DOCKER_SQLITE_MOUNT=""
-                    if ! grep -qiE '^[[:space:]]*DB_ENGINE[[:space:]]*=[[:space:]]*(postgres|postgresql)' ${ENV_FILE} 2>/dev/null; then
-                      mkdir -p "${SQLITE_HOST_DIR}"
-                      DOCKER_SQLITE_MOUNT="-v ${SQLITE_HOST_DIR}:/app/dbdata"
-                    fi
+                    # One SQLite file on the agent, reused by every new container → same server DB across deploys.
+                    # Your local PC still uses its own pms/db.sqlite3 unless you copy this file or use shared Postgres.
+                    touch "${SQLITE_ON_AGENT}" || true
+                    chmod 666 "${SQLITE_ON_AGENT}" 2>/dev/null || true
                     docker rm -f ${APP_NAME} || true
                     docker run -d \\
                       --name ${APP_NAME} \\
                       --restart unless-stopped \\
-                      \$DOCKER_SQLITE_MOUNT \\
                       --env-file ${ENV_FILE} \\
                       -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" \\
-                      -p ${env.PUBLISH_PORT}:${env.CONTAINER_PORT} \\
+                      -v "${SQLITE_ON_AGENT}:/app/db.sqlite3" \\
+                      -p ${HOST_PORT}:${CONTAINER_PORT} \\
                       ${IMAGE_NAME}:${BUILD_NUMBER}
                 """
             }
         }
 
-        stage('Bootstrap dashboard admin') {
-            when {
-                expression { return params.RUN_BOOTSTRAP_DASHBOARD_ADMIN }
-            }
+        // Apply Django migrations against the mounted SQLite DB (idempotent).
+        stage('Migrate database') {
             steps {
                 sh """
                     sleep 3
-                    docker exec ${APP_NAME} python manage.py bootstrap_dashboard_admin --force-password
+                    docker exec ${APP_NAME} python manage.py migrate --noinput
+                """
+            }
+        }
+
+        // Uses DJANGO_SUPERUSER_USERNAME / DJANGO_SUPERUSER_EMAIL / DJANGO_SUPERUSER_PASSWORD from ${ENV_FILE}.
+        // Creates or promotes Django admin login for /admin/ — see pms_api.management.commands.ensure_superuser
+        stage('Ensure superuser') {
+            steps {
+                sh """
+                    docker exec ${APP_NAME} python manage.py ensure_superuser || true
                 """
             }
         }
@@ -119,7 +101,7 @@ pipeline {
 
     post {
         success {
-            echo "Deployment successful. App is available on host port ${env.PUBLISH_PORT} (container ${env.CONTAINER_PORT})."
+            echo "Deployment successful. App is available on port ${HOST_PORT}."
         }
         failure {
             echo "Pipeline failed. Check build logs."
