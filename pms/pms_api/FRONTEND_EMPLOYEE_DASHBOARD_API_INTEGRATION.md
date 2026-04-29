@@ -3,7 +3,7 @@
 This document is a direct handoff for frontend integration of the Employee dashboard and related task workflow APIs.
 
 Use this backend API base:
-- `http://127.0.0.1:8000/api/v1`
+- `http://187.127.139.247:6009/api/v1`
 
 ---
 
@@ -18,8 +18,9 @@ Use this backend API base:
 - Current logged-in user:
   - `GET /auth/me`
 
-Recommended frontend env:
-- `NEXT_PUBLIC_API_URL=http://127.0.0.1:8000`
+Recommended frontend env (Next.js):
+- `BACKEND_API_ORIGIN=http://187.127.139.247:6009` (used server-side to proxy `/api/v1/*`)
+- `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000` (keeps browser calls using same-origin proxy routes)
 
 ---
 
