@@ -1,3 +1,5 @@
+import os
+
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -16,13 +18,13 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             "--email",
-            default="admin@apparatus.solutions",
-            help="Login email (also stored as username).",
+            default=os.getenv("BOOTSTRAP_ADMIN_EMAIL", "admin@apparatus.solutions"),
+            help="Login email (also stored as username). Set BOOTSTRAP_ADMIN_EMAIL in .env to override default.",
         )
         parser.add_argument(
             "--password",
-            default="Admin@1234",
-            help="Initial password.",
+            default=os.getenv("BOOTSTRAP_ADMIN_PASSWORD", "Admin@1234"),
+            help="Initial password. Set BOOTSTRAP_ADMIN_PASSWORD in .env to override default.",
         )
         parser.add_argument(
             "--force-password",
@@ -75,11 +77,13 @@ class Command(BaseCommand):
                 )
                 return
 
+            first = "Siva" if email.split("@")[0].lower() == "siva" else "Admin"
+            last = "User"
             user = User(
                 username=email,
                 email=email,
-                first_name="Admin",
-                last_name="User",
+                first_name=first,
+                last_name=last,
             )
             user.set_password(password)
             user.save()

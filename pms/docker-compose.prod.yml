@@ -8,8 +8,9 @@ services:
       - "${APP_PORT:-6009}:8000"
     env_file:
       - .env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    volumes:
+      # Persists SQLite when using SQLITE_DB_PATH=/app/dbdata/db.sqlite3 in .env
+      - ./sqlite-data:/app/dbdata
     restart: unless-stopped
     healthcheck:
       test:

@@ -105,10 +105,17 @@ if _db_engine in ("postgres", "postgresql"):
         }
     }
 else:
+    _sqlite_raw = os.getenv("SQLITE_DB_PATH", "").strip()
+    if _sqlite_raw:
+        _sqlite_path = Path(_sqlite_raw)
+        if not _sqlite_path.is_absolute():
+            _sqlite_path = BASE_DIR / _sqlite_path
+    else:
+        _sqlite_path = BASE_DIR / "db.sqlite3"
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
+            "NAME": _sqlite_path,
         }
     }
 
