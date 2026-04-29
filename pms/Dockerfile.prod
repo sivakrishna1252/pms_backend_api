@@ -15,6 +15,7 @@ COPY . /app
 RUN chown -R app:app /app
 USER app
 
+# Gunicorn listens on 8000; publish on the host with -p APP_PORT:8000 (default APP_PORT 6009 in .env.example).
 EXPOSE 8000
 
 CMD ["sh", "-c", "python manage.py migrate && gunicorn pms.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"]

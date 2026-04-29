@@ -8,7 +8,7 @@ pipeline {
         ENV_ID = "pms_backend_env"
         ENV_FILE = ".env"
         ALLOWED_HOSTS_VALUE = "127.0.0.1,localhost,187.127.139.247"
-        HOST_PORT = "6009"
+        APP_PORT_DEFAULT = "6009"
         CONTAINER_PORT = "8000"
     }
 
@@ -64,13 +64,28 @@ pipeline {
                             echo "${ENV_FILE} created as empty fallback"
                         fi
                     fi
+                """
+                script {
+                    def envPath = "${env.WORKSPACE}/${env.PROJECT_DIR}/${env.ENV_FILE}"
+                    def publishPort = "${env.APP_PORT_DEFAULT}"
+                    if (fileExists(envPath)) {
+                        def text = readFile(envPath)
+                        def matcher = (text =~ /(?m)^\s*APP_PORT\s*=\s*(\S+)/)
+                        if (matcher.find()) {
+                            publishPort = matcher.group(1).trim()
+                        }
+                    }
+                    env.PUBLISH_PORT = publishPort
+                }
+                sh """
+                    cd ${PROJECT_DIR}
                     docker rm -f ${APP_NAME} || true
                     docker run -d \\
                       --name ${APP_NAME} \\
                       --restart unless-stopped \\
                       --env-file ${ENV_FILE} \\
                       -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" \\
-                      -p ${HOST_PORT}:${CONTAINER_PORT} \\
+                      -p ${env.PUBLISH_PORT}:${env.CONTAINER_PORT} \\
                       ${IMAGE_NAME}:${BUILD_NUMBER}
                 """
             }
@@ -79,7 +94,7 @@ pipeline {
 
     post {
         success {
-            echo "Deployment successful. App is available on port ${HOST_PORT}."
+            echo "Deployment successful. App is available on host port ${env.PUBLISH_PORT} (container ${env.CONTAINER_PORT})."
         }
         failure {
             echo "Pipeline failed. Check build logs."
