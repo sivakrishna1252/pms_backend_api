@@ -31,6 +31,15 @@ DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost").split(",") if host.strip() and host.strip() != ""]
 
+# Admin login POST over http://IP:port needs trusted origins (Django 4+). Comma-separated full origins.
+# Example: http://187.127.139.247:6009 (scheme + host + port, no path)
+csrf_origins_env = os.getenv("CSRF_TRUSTED_ORIGINS", "")
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in csrf_origins_env.split(",")
+    if origin.strip()
+]
+
 
 # Application definition
 
