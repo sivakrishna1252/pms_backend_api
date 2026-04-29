@@ -86,12 +86,16 @@ pipeline {
                             echo "${ENV_FILE} created as empty fallback"
                         fi
                     fi
-                    mkdir -p "${SQLITE_HOST_DIR}"
+                    DOCKER_SQLITE_MOUNT=""
+                    if ! grep -qiE '^[[:space:]]*DB_ENGINE[[:space:]]*=[[:space:]]*(postgres|postgresql)' ${ENV_FILE} 2>/dev/null; then
+                      mkdir -p "${SQLITE_HOST_DIR}"
+                      DOCKER_SQLITE_MOUNT="-v ${SQLITE_HOST_DIR}:/app/dbdata"
+                    fi
                     docker rm -f ${APP_NAME} || true
                     docker run -d \\
                       --name ${APP_NAME} \\
                       --restart unless-stopped \\
-                      -v "${SQLITE_HOST_DIR}:/app/dbdata" \\
+                      \$DOCKER_SQLITE_MOUNT \\
                       --env-file ${ENV_FILE} \\
                       -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" \\
                       -p ${env.PUBLISH_PORT}:${env.CONTAINER_PORT} \\

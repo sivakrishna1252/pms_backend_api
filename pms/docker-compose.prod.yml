@@ -8,9 +8,7 @@ services:
       - "${APP_PORT:-6009}:8000"
     env_file:
       - .env
-    volumes:
-      # Persists SQLite when using SQLITE_DB_PATH=/app/dbdata/db.sqlite3 in .env
-      - ./sqlite-data:/app/dbdata
+    # Add a bind mount only for SQLite, e.g. ./sqlite-data:/app/dbdata when SQLITE_DB_PATH=/app/dbdata/db.sqlite3
     restart: unless-stopped
     healthcheck:
       test:
