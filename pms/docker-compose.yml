@@ -6,6 +6,12 @@ services:
       - "${APP_PORT:-6009}:8000"
     env_file:
       - .env
+    environment:
+      # Overrides .env: local `python manage.py` can use POSTGRES_HOST=127.0.0.1; containers need the host gateway.
+      POSTGRES_HOST: host.docker.internal
+    # Lets the container use host.docker.internal to reach Postgres on the host (Linux + Docker Desktop).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - .:/app
     command: >
