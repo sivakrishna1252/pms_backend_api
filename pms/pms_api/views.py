@@ -827,7 +827,8 @@ class TaskViewSet(viewsets.ModelViewSet):
     serializer_class = TaskSerializer
     pagination_class = StandardResultsSetPagination
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
+    # JSON for actions like request-deadline-change, status PATCH; multipart for task document uploads.
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
         apply_automatic_task_status_rules()
@@ -1103,7 +1104,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         ):
             return api_response(
                 False,
-                "Stop the active timer first, then mark task as completed.",
+                "First stop the task, then mark it as completed.",
                 status.HTTP_400_BAD_REQUEST,
             )
         task.status = status_value
@@ -1475,20 +1476,27 @@ class DashboardAPIView(APIView):
 
 @extend_schema(tags=["BA/Admin APIs"])
 class WorkTrackingAPIView(APIView):
-    permission_classes = [IsAuthenticated, IsAdminOrBA]
+    permission_classes = [IsAuthenticated]
 
     @extend_schema(responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
         apply_automatic_task_status_rules()
         role = user_role(request.user)
-        if role not in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
-            return api_response(False, "Only Admin or BA can access work tracking.", status.HTTP_403_FORBIDDEN)
+        if role not in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA, UserProfile.Roles.EMPLOYEE}:
+            return api_response(False, "Only Admin, BA, or Employee can access work tracking.", status.HTTP_403_FORBIDDEN)
 
-        tasks_qs = (
-            Task.objects.select_related("project", "milestone", "assigned_to", "created_by")
-            .filter(assigned_to__isnull=False)
-            .order_by("-updated_at")
-        )
+        if role == UserProfile.Roles.EMPLOYEE:
+            tasks_qs = (
+                Task.objects.select_related("project", "milestone", "assigned_to", "created_by")
+                .filter(assigned_to=request.user)
+                .order_by("-updated_at")
+            )
+        else:
+            tasks_qs = (
+                Task.objects.select_related("project", "milestone", "assigned_to", "created_by")
+                .filter(assigned_to__isnull=False)
+                .order_by("-updated_at")
+            )
         if role == UserProfile.Roles.BA:
             allowed_creator_ids = [request.user.id]
             admin_ids = list(
@@ -1507,7 +1515,8 @@ class WorkTrackingAPIView(APIView):
         status_filter = request.query_params.get("status")
         only_active = request.query_params.get("only_active")
 
-        if employee_id:
+        # Employees only ever see their own assignments; ignore employee_id for others' data.
+        if employee_id and role in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
             tasks_qs = tasks_qs.filter(assigned_to_id=employee_id)
         if project_id:
             tasks_qs = tasks_qs.filter(project_id=project_id)
@@ -1613,6 +1622,8 @@ class WorkTrackingAPIView(APIView):
         )
         if role == UserProfile.Roles.BA:
             logs_qs = logs_qs.filter(task__created_by=actor)
+        elif role == UserProfile.Roles.EMPLOYEE:
+            logs_qs = logs_qs.filter(user=actor)
 
         events = []
         for log in logs_qs[:80]:
@@ -1650,6 +1661,8 @@ class WorkTrackingAPIView(APIView):
         )
         if role == UserProfile.Roles.BA:
             completed_qs = completed_qs.filter(created_by=actor)
+        elif role == UserProfile.Roles.EMPLOYEE:
+            completed_qs = completed_qs.filter(assigned_to=actor)
         for task in completed_qs[:40]:
             employee = task.assigned_to or task.created_by
             employee_name = (
