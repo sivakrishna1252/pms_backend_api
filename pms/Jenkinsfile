@@ -9,7 +9,6 @@ pipeline {
         ALLOWED_HOSTS_VALUE = "127.0.0.1,localhost,187.127.139.247"
         HOST_PORT = "6009"
         CONTAINER_PORT = "8000"
-        // Host path for SQLite so redeploys keep the same DB on the *Jenkins agent* (not your laptop).
         SQLITE_ON_AGENT = "${WORKSPACE}/${PROJECT_DIR}/db.sqlite3"
     }
 
@@ -19,6 +18,7 @@ pipeline {
     }
 
     stages {
+
         stage('Checkout') {
             steps {
                 checkout scm
@@ -29,6 +29,7 @@ pipeline {
             steps {
                 sh """
                     cd ${PROJECT_DIR}
+
                     if [ ! -f ${ENV_FILE} ]; then
                         if [ -f .env.example ]; then
                             cp .env.example ${ENV_FILE}
@@ -36,7 +37,10 @@ pipeline {
                             touch ${ENV_FILE}
                         fi
                     fi
-                    docker build -f Dockerfile.prod -t ${IMAGE_NAME}:${BUILD_NUMBER} -t ${IMAGE_NAME}:latest .
+
+                    docker build -f Dockerfile.prod \
+                        -t ${IMAGE_NAME}:${BUILD_NUMBER} \
+                        -t ${IMAGE_NAME}:latest .
                 """
             }
         }
@@ -45,7 +49,11 @@ pipeline {
             steps {
                 sh """
                     cd ${PROJECT_DIR}
-                    docker run --rm --env-file ${ENV_FILE} -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" ${IMAGE_NAME}:${BUILD_NUMBER} python manage.py check
+                    docker run --rm \
+                      --env-file ${ENV_FILE} \
+                      -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" \
+                      ${IMAGE_NAME}:${BUILD_NUMBER} \
+                      python manage.py check
                 """
             }
         }
@@ -54,6 +62,7 @@ pipeline {
             steps {
                 sh """
                     cd ${PROJECT_DIR}
+
                     if [ ! -f ${ENV_FILE} ]; then
                         if [ -f .env.example ]; then
                             cp .env.example ${ENV_FILE}
@@ -61,11 +70,13 @@ pipeline {
                             touch ${ENV_FILE}
                         fi
                     fi
-                    # One SQLite file on the agent, reused by every new container → same server DB across deploys.
-                    # Your local PC still uses its own pms/db.sqlite3 unless you copy this file or use shared Postgres.
+
+                    # ensure sqlite file exists
                     touch "${SQLITE_ON_AGENT}" || true
-                    chmod 666 "${SQLITE_ON_AGENT}" 2>/dev/null || true
+                    chmod 666 "${SQLITE_ON_AGENT}" || true
+
                     docker rm -f ${APP_NAME} || true
+
                     docker run -d \\
                       --name ${APP_NAME} \\
                       --restart unless-stopped \\
@@ -78,22 +89,33 @@ pipeline {
             }
         }
 
-        // Apply Django migrations against the mounted SQLite DB (idempotent).
-        stage('Migrate database') {
+        stage('Migrate DB') {
             steps {
                 sh """
-                    sleep 3
-                    docker exec ${APP_NAME} python manage.py migrate --noinput
+                    echo "Waiting for container..."
+                    sleep 8
+
+                    docker exec ${APP_NAME} \
+                      python manage.py migrate --noinput
                 """
             }
         }
 
-        // Uses DJANGO_SUPERUSER_USERNAME / DJANGO_SUPERUSER_EMAIL / DJANGO_SUPERUSER_PASSWORD from ${ENV_FILE}.
-        // Creates or promotes Django admin login for /admin/ — see pms_api.management.commands.ensure_superuser
-        stage('Ensure superuser') {
+        stage('Ensure Superuser') {
             steps {
                 sh """
-                    docker exec ${APP_NAME} python manage.py ensure_superuser || true
+                    docker exec ${APP_NAME} python manage.py shell -c "
+from django.contrib.auth import get_user_model;
+User = get_user_model();
+username='${DJANGO_SUPERUSER_USERNAME}';
+password='${DJANGO_SUPERUSER_PASSWORD}';
+email='${DJANGO_SUPERUSER_EMAIL}';
+if not User.objects.filter(username=username).exists():
+    User.objects.create_superuser(username, email, password)
+    print('Superuser created')
+else:
+    print('Superuser already exists')
+"
                 """
             }
         }
@@ -101,10 +123,10 @@ pipeline {
 
     post {
         success {
-            echo "Deployment successful. App is available on port ${HOST_PORT}."
+            echo "Deployment successful: http://${ALLOWED_HOSTS_VALUE.split(',')[2]}:${HOST_PORT}/admin/"
         }
         failure {
-            echo "Pipeline failed. Check build logs."
+            echo "Pipeline failed. Check logs."
         }
     }
 }
