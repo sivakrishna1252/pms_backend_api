@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.core.cache import cache
 from django.core.mail import send_mail
-from django.db.models import Count, Q, Sum
+from django.db.models import Case, Count, DecimalField, F, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from html import escape
@@ -24,6 +24,7 @@ from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from .ai_readonly_context import build_readonly_context_text
 from .models import FileAttachment, Milestone, Notification, Project, Task, TimeLog, UserProfile, humanize_duration
 from .ollama_client import OllamaClientError, ollama_chat
+from .progress import milestone_progress_data, project_progress_data
 from .pagination import StandardResultsSetPagination
 from .permissions import IsAdmin, IsAdminOrBA, user_role
 from .serializers import (
@@ -665,7 +666,22 @@ class ProjectViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().annotate(
+            _total_estimated_hours=Coalesce(
+                Sum("tasks__estimated_hours"),
+                Value(0, output_field=DecimalField(max_digits=14, decimal_places=4)),
+            ),
+            _weighted_complete_hours=Coalesce(
+                Sum(
+                    Case(
+                        When(tasks__status=Task.Status.COMPLETED, then=F("tasks__estimated_hours")),
+                        default=Value(0),
+                        output_field=DecimalField(max_digits=14, decimal_places=4),
+                    )
+                ),
+                Value(0, output_field=DecimalField(max_digits=14, decimal_places=4)),
+            ),
+        )
         if user_role(self.request.user) == UserProfile.Roles.EMPLOYEE:
             return queryset.filter(tasks__assigned_to=self.request.user).distinct()
         return queryset
@@ -780,6 +796,23 @@ class ProjectViewSet(viewsets.ModelViewSet):
             {"project_id": project.id, "reason": reason, "mail_triggered": mail_triggered},
         )
 
+    @extend_schema(
+        summary="Project effort-weighted progress",
+        description=(
+            "Returns progress_percent = weighted_complete_hours / total_estimated_hours × 100 "
+            "over all project tasks. Each task uses estimated_hours as weight; COMPLETED tasks "
+            "contribute full weight. progress_percent is null when total estimated hours is 0. "
+            "Includes per-milestone breakdown and unmilestoned_tasks when present."
+        ),
+        responses={200: OpenApiTypes.OBJECT},
+    )
+    @action(detail=True, methods=["get"], url_path="progress")
+    def progress(self, request, pk=None):
+        project = self.get_object()
+        apply_automatic_task_status_rules()
+        payload = project_progress_data(project)
+        return api_response(True, "Project progress calculated.", status.HTTP_200_OK, payload)
+
 
 
 
@@ -794,7 +827,22 @@ class MilestoneViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = super().get_queryset().annotate(
+            _total_estimated_hours=Coalesce(
+                Sum("tasks__estimated_hours"),
+                Value(0, output_field=DecimalField(max_digits=14, decimal_places=4)),
+            ),
+            _weighted_complete_hours=Coalesce(
+                Sum(
+                    Case(
+                        When(tasks__status=Task.Status.COMPLETED, then=F("tasks__estimated_hours")),
+                        default=Value(0),
+                        output_field=DecimalField(max_digits=14, decimal_places=4),
+                    )
+                ),
+                Value(0, output_field=DecimalField(max_digits=14, decimal_places=4)),
+            ),
+        )
         if user_role(self.request.user) == UserProfile.Roles.EMPLOYEE:
             return queryset.filter(tasks__assigned_to=self.request.user).distinct()
         return queryset
@@ -815,6 +863,21 @@ class MilestoneViewSet(viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         return super().partial_update(request, *args, **kwargs)
+
+    @extend_schema(
+        summary="Milestone effort-weighted progress",
+        description=(
+            "Same formula as project progress, scoped to tasks linked to this milestone. "
+            "progress_percent is null when total estimated hours for those tasks is 0."
+        ),
+        responses={200: OpenApiTypes.OBJECT},
+    )
+    @action(detail=True, methods=["get"], url_path="progress")
+    def progress(self, request, pk=None):
+        milestone = self.get_object()
+        apply_automatic_task_status_rules()
+        payload = milestone_progress_data(milestone)
+        return api_response(True, "Milestone progress calculated.", status.HTTP_200_OK, payload)
 
 
 
@@ -1035,7 +1098,9 @@ class TaskViewSet(viewsets.ModelViewSet):
             return api_response(False, "No active timer found for this task.", status.HTTP_400_BAD_REQUEST)
         log.stop(source=TimeLog.Source.MANUAL_PAUSE)
         task.status = Task.Status.PAUSED
-        task.save(update_fields=["status", "total_time_spent_seconds"])
+        # Do not save total_time_spent_seconds here: log.stop() already persisted it on Task;
+        # this `task` instance is stale and would overwrite the correct total with 0/old value.
+        task.save(update_fields=["status"])
         _sync_parent_statuses_for_task(task)
         return api_response(True, "Task paused.", status.HTTP_200_OK, {"task_id": task.id, "status": task.status})
 
@@ -1048,7 +1113,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         log.stop(source=TimeLog.Source.MANUAL_STOP)
         if task.status != Task.Status.COMPLETED:
             task.status = Task.Status.PAUSED
-            task.save(update_fields=["status", "total_time_spent_seconds"])
+            task.save(update_fields=["status"])
         _sync_parent_statuses_for_task(task)
         if user_role(request.user) == UserProfile.Roles.EMPLOYEE:
             return api_response(
@@ -1057,6 +1122,7 @@ class TaskViewSet(viewsets.ModelViewSet):
                 status.HTTP_200_OK,
                 {"task_id": task.id, "status": task.status},
             )
+        task.refresh_from_db(fields=["total_time_spent_seconds"])
         return api_response(
             True,
             "Task stopped.",
@@ -1550,6 +1616,16 @@ class WorkTrackingAPIView(APIView):
                 if active_log.start_time.date() == today:
                     today_worked_seconds += current_session_seconds
 
+            completed_duration_sum = (
+                TimeLog.objects.filter(
+                    task=task,
+                    user=task.assigned_to,
+                    end_time__isnull=False,
+                ).aggregate(s=Sum("duration_seconds"))["s"]
+                or 0
+            )
+            total_tracked_seconds = int(completed_duration_sum) + int(current_session_seconds)
+
             last_completed_log = (
                 TimeLog.objects.filter(task=task, user=task.assigned_to, end_time__isnull=False).order_by("-end_time").first()
             )
@@ -1557,6 +1633,7 @@ class WorkTrackingAPIView(APIView):
                 start_count=Count("id"),
                 pause_count=Count("id", filter=Q(source=TimeLog.Source.MANUAL_PAUSE)),
                 stop_count=Count("id", filter=Q(source=TimeLog.Source.MANUAL_STOP)),
+                auto_stop_count=Count("id", filter=Q(source=TimeLog.Source.AUTO_STOP_8PM)),
             )
 
             records.append(
@@ -1577,10 +1654,12 @@ class WorkTrackingAPIView(APIView):
                     "current_session_seconds": current_session_seconds,
                     "current_session_display": humanize_duration(current_session_seconds),
                     "last_session_end_time": last_completed_log.end_time if last_completed_log else None,
+                    "last_session_start_time": last_completed_log.start_time if last_completed_log else None,
+                    "last_stop_source": last_completed_log.source if last_completed_log else None,
                     "today_worked_seconds": today_worked_seconds,
                     "today_worked_display": humanize_duration(today_worked_seconds),
-                    "total_time_spent_seconds": task.total_time_spent_seconds,
-                    "total_time_spent_display": humanize_duration(task.total_time_spent_seconds),
+                    "total_time_spent_seconds": total_tracked_seconds,
+                    "total_time_spent_display": humanize_duration(total_tracked_seconds),
                     "history": history,
                 }
             )
@@ -1599,6 +1678,16 @@ class WorkTrackingAPIView(APIView):
                 "started_count": len([item for item in records if item["timer_state"] == "STARTED"]),
                 "paused_count": len([item for item in records if item["timer_state"] == "PAUSED"]),
                 "stopped_count": len([item for item in records if item["timer_state"] == "STOPPED"]),
+                "not_started_count": len([item for item in records if item["task_status"] == Task.Status.NOT_STARTED]),
+                "delayed_count": len([item for item in records if item["task_status"] == Task.Status.DELAYED]),
+                "completed_count": len([item for item in records if item["task_status"] == Task.Status.COMPLETED]),
+                "auto_stopped_count": len(
+                    [
+                        item
+                        for item in records
+                        if item["timer_state"] == "STOPPED" and item.get("last_stop_source") == TimeLog.Source.AUTO_STOP_8PM
+                    ]
+                ),
             },
             "work_tracking": records,
             "recent_activity": self._build_recent_activity(tasks_qs, role, request.user),

@@ -2,12 +2,22 @@ from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.db import IntegrityError
+from decimal import Decimal
 from django.core.files.uploadedfile import UploadedFile
 from pathlib import Path
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import FileAttachment, Milestone, Notification, Project, Task, TimeLog, UserProfile
+from .models import (
+    FileAttachment,
+    Milestone,
+    Notification,
+    Project,
+    Task,
+    TimeLog,
+    UserProfile,
+    humanize_duration,
+)
 User = get_user_model()
 
 ALLOWED_DOCUMENT_EXTENSIONS = {".doc", ".docx", ".md"}
@@ -408,6 +418,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 #project serializer
 class ProjectSerializer(serializers.ModelSerializer):
     created_by_name = serializers.SerializerMethodField(read_only=True)
+    progress_percent = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Project
@@ -421,6 +432,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "deadline",
             "document",
             "status",
+            "progress_percent",
             "created_at",
             "updated_at",
         ]
@@ -431,12 +443,28 @@ class ProjectSerializer(serializers.ModelSerializer):
             return ""
         return obj.created_by.get_full_name().strip() or obj.created_by.email
 
+    def get_progress_percent(self, obj):
+        total = getattr(obj, "_total_estimated_hours", None)
+        weighted = getattr(obj, "_weighted_complete_hours", None)
+        if total is None or weighted is None:
+            from .progress import project_progress_data
+
+            return project_progress_data(obj).get("progress_percent")
+        total = total or Decimal("0")
+        weighted = weighted or Decimal("0")
+        if total <= 0:
+            return None
+        return float((weighted / total * Decimal("100")).quantize(Decimal("0.01")))
+
     def validate(self, attrs):
+        request = self.context.get("request")
+        role = getattr(getattr(getattr(request, "user", None), "profile", None), "role", None)
         if "document" in attrs:
             attrs["document"] = validate_uploaded_document(attrs["document"])
+        if self.instance and "status" in attrs and attrs["status"] != self.instance.status:
+            if role != UserProfile.Roles.ADMIN:
+                raise serializers.ValidationError({"status": "Only Admin can modify project status."})
         if self.instance and "deadline" in attrs and attrs["deadline"] != self.instance.deadline:
-            request = self.context.get("request")
-            role = getattr(getattr(getattr(request, "user", None), "profile", None), "role", None)
             if role != UserProfile.Roles.ADMIN:
                 raise serializers.ValidationError({"deadline": "Only Admin can modify project deadline."})
         return attrs
@@ -449,6 +477,7 @@ class ProjectSerializer(serializers.ModelSerializer):
 class MilestoneSerializer(serializers.ModelSerializer):
     created_by_name = serializers.SerializerMethodField(read_only=True)
     project_name = serializers.CharField(source="project.name", read_only=True)
+    progress_percent = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Milestone
@@ -463,6 +492,7 @@ class MilestoneSerializer(serializers.ModelSerializer):
             "end_date",
             "document",
             "status",
+            "progress_percent",
             "created_by",
             "created_by_name",
             "created_at",
@@ -475,13 +505,35 @@ class MilestoneSerializer(serializers.ModelSerializer):
             return ""
         return obj.created_by.get_full_name().strip() or obj.created_by.email
 
+    def get_progress_percent(self, obj):
+        total = getattr(obj, "_total_estimated_hours", None)
+        weighted = getattr(obj, "_weighted_complete_hours", None)
+        if total is None or weighted is None:
+            from .progress import milestone_progress_data
+
+            return milestone_progress_data(obj).get("progress_percent")
+        total = total or Decimal("0")
+        weighted = weighted or Decimal("0")
+        if total <= 0:
+            return None
+        return float((weighted / total * Decimal("100")).quantize(Decimal("0.01")))
+
     def validate(self, attrs):
         if "document" in attrs:
             attrs["document"] = validate_uploaded_document(attrs["document"])
+        project = attrs.get("project", self.instance.project if self.instance else None)
+        end_date = attrs.get("end_date", self.instance.end_date if self.instance else None)
+        if project and end_date and end_date > project.deadline:
+            raise serializers.ValidationError(
+                {"end_date": "Expected date cannot be after the project deadline."}
+            )
         if self.instance and "end_date" in attrs and attrs["end_date"] != self.instance.end_date:
             request = self.context.get("request")
-            if not request or request.user.id != self.instance.created_by_id:
-                raise serializers.ValidationError({"end_date": "Only milestone creator can modify end_date."})
+            role = getattr(getattr(getattr(request, "user", None), "profile", None), "role", None)
+            if role not in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
+                raise serializers.ValidationError(
+                    {"end_date": "Only Admin or BA can modify milestone expected date."}
+                )
         return attrs
 
 
@@ -495,7 +547,8 @@ class TaskSerializer(serializers.ModelSerializer):
     milestone_name = serializers.CharField(source="milestone.name", read_only=True)
     project_document = serializers.FileField(source="project.document", read_only=True)
     milestone_document = serializers.FileField(source="milestone.document", read_only=True)
-    total_time_spent_display = serializers.CharField(read_only=True)
+    total_time_spent_display = serializers.SerializerMethodField(read_only=True)
+    timer_state = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Task
@@ -517,8 +570,10 @@ class TaskSerializer(serializers.ModelSerializer):
             "priority",
             "deadline",
             "document",
+            "estimated_hours",
             "total_time_spent_seconds",
             "total_time_spent_display",
+            "timer_state",
             "created_at",
             "updated_at",
         ]
@@ -545,6 +600,73 @@ class TaskSerializer(serializers.ModelSerializer):
         if not obj.assigned_to:
             return ""
         return obj.assigned_to.get_full_name().strip() or obj.assigned_to.email
+
+    def get_total_time_spent_display(self, obj) -> str:
+        return humanize_duration(getattr(obj, "total_time_spent_seconds", None))
+
+    def get_timer_state(self, obj) -> str | None:
+        """STARTED when assignee has an open TimeLog; otherwise None (idle / not running)."""
+        assignee_id = obj.assigned_to_id
+        if not assignee_id:
+            return None
+        if TimeLog.objects.filter(task=obj, user_id=assignee_id, end_time__isnull=True).exists():
+            return "STARTED"
+        return None
+
+    def validate(self, attrs):
+        from datetime import date, datetime
+
+        instance = self.instance
+
+        def _pk(val):
+            if val is None:
+                return None
+            return getattr(val, "pk", val)
+
+        def _date_only(val):
+            if val is None:
+                return None
+            if isinstance(val, datetime):
+                return val.date()
+            if isinstance(val, date):
+                return val
+            return val
+
+        project_id = attrs.get("project", None)
+        project_id = _pk(project_id)
+        if project_id is None and instance is not None:
+            project_id = instance.project_id
+
+        milestone_val = attrs.get("milestone", serializers.empty)
+        if milestone_val is serializers.empty:
+            milestone_id = instance.milestone_id if instance else None
+        else:
+            milestone_id = _pk(milestone_val)
+
+        deadline_val = attrs.get("deadline", serializers.empty)
+        if deadline_val is serializers.empty:
+            deadline = instance.deadline if instance else None
+        else:
+            deadline = deadline_val
+        deadline = _date_only(deadline)
+
+        if deadline and project_id is not None:
+            proj_deadline = (
+                Project.objects.filter(pk=project_id).values_list("deadline", flat=True).first()
+            )
+            proj_deadline = _date_only(proj_deadline)
+            if proj_deadline is not None and deadline > proj_deadline:
+                raise serializers.ValidationError(
+                    {"deadline": "Expected date cannot be after the project deadline."}
+                )
+        if deadline and milestone_id is not None:
+            ms_end = Milestone.objects.filter(pk=milestone_id).values_list("end_date", flat=True).first()
+            ms_end = _date_only(ms_end)
+            if ms_end is not None and deadline > ms_end:
+                raise serializers.ValidationError(
+                    {"deadline": "Expected date cannot be after the milestone end date."}
+                )
+        return attrs
 
 
 

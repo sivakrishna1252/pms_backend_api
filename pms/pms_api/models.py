@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
@@ -158,6 +160,13 @@ class Task(TimeStampedModel):
     priority = models.CharField(max_length=20, blank=True)
     deadline = models.DateField(null=True, blank=True)
     document = models.FileField(upload_to="task_docs/", null=True, blank=True)
+    estimated_hours = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0"),
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text="Planned effort for weighted progress; COMPLETED tasks count full weight toward progress.",
+    )
     total_time_spent_seconds = models.PositiveIntegerField(default=0, validators=[MinValueValidator(0)])
 
     def __str__(self):
