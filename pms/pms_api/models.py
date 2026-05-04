@@ -165,7 +165,7 @@ class Task(TimeStampedModel):
         decimal_places=2,
         default=Decimal("0"),
         validators=[MinValueValidator(Decimal("0"))],
-        help_text="Planned effort for weighted progress; COMPLETED tasks count full weight toward progress.",
+        help_text="Planned effort (hours). If 0, planned hours for progress derive from task deadline vs created date (inclusive days × 8).",
     )
     total_time_spent_seconds = models.PositiveIntegerField(default=0, validators=[MinValueValidator(0)])
 

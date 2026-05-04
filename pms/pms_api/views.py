@@ -666,22 +666,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
-        queryset = super().get_queryset().annotate(
-            _total_estimated_hours=Coalesce(
-                Sum("tasks__estimated_hours"),
-                Value(0, output_field=DecimalField(max_digits=14, decimal_places=4)),
-            ),
-            _weighted_complete_hours=Coalesce(
-                Sum(
-                    Case(
-                        When(tasks__status=Task.Status.COMPLETED, then=F("tasks__estimated_hours")),
-                        default=Value(0),
-                        output_field=DecimalField(max_digits=14, decimal_places=4),
-                    )
-                ),
-                Value(0, output_field=DecimalField(max_digits=14, decimal_places=4)),
-            ),
-        )
+        queryset = super().get_queryset()
         if user_role(self.request.user) == UserProfile.Roles.EMPLOYEE:
             return queryset.filter(tasks__assigned_to=self.request.user).distinct()
         return queryset
@@ -797,12 +782,13 @@ class ProjectViewSet(viewsets.ModelViewSet):
         )
 
     @extend_schema(
-        summary="Project effort-weighted progress",
+        summary="Project work-tracking progress",
         description=(
-            "Returns progress_percent = weighted_complete_hours / total_estimated_hours × 100 "
-            "over all project tasks. Each task uses estimated_hours as weight; COMPLETED tasks "
-            "contribute full weight. progress_percent is null when total estimated hours is 0. "
-            "Includes per-milestone breakdown and unmilestoned_tasks when present."
+            "Returns progress_percent as a planned-hours-weighted average of task progress. "
+            "Per-task: NOT_STARTED 0%, COMPLETED 100%, otherwise min(worked_hours/planned_hours×100, 95%). "
+            "Planned hours = estimated_hours if set, else (deadline − created date, inclusive days) × 8. "
+            "Worked hours = tracked time (including active timer). "
+            "progress_percent is null when no task has derivable planned hours."
         ),
         responses={200: OpenApiTypes.OBJECT},
     )
@@ -827,22 +813,7 @@ class MilestoneViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser]
 
     def get_queryset(self):
-        queryset = super().get_queryset().annotate(
-            _total_estimated_hours=Coalesce(
-                Sum("tasks__estimated_hours"),
-                Value(0, output_field=DecimalField(max_digits=14, decimal_places=4)),
-            ),
-            _weighted_complete_hours=Coalesce(
-                Sum(
-                    Case(
-                        When(tasks__status=Task.Status.COMPLETED, then=F("tasks__estimated_hours")),
-                        default=Value(0),
-                        output_field=DecimalField(max_digits=14, decimal_places=4),
-                    )
-                ),
-                Value(0, output_field=DecimalField(max_digits=14, decimal_places=4)),
-            ),
-        )
+        queryset = super().get_queryset()
         if user_role(self.request.user) == UserProfile.Roles.EMPLOYEE:
             return queryset.filter(tasks__assigned_to=self.request.user).distinct()
         return queryset
@@ -865,10 +836,10 @@ class MilestoneViewSet(viewsets.ModelViewSet):
         return super().partial_update(request, *args, **kwargs)
 
     @extend_schema(
-        summary="Milestone effort-weighted progress",
+        summary="Milestone work-tracking progress",
         description=(
             "Same formula as project progress, scoped to tasks linked to this milestone. "
-            "progress_percent is null when total estimated hours for those tasks is 0."
+            "progress_percent is null when no task in the milestone has derivable planned hours."
         ),
         responses={200: OpenApiTypes.OBJECT},
     )

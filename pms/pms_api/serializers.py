@@ -444,17 +444,9 @@ class ProjectSerializer(serializers.ModelSerializer):
         return obj.created_by.get_full_name().strip() or obj.created_by.email
 
     def get_progress_percent(self, obj):
-        total = getattr(obj, "_total_estimated_hours", None)
-        weighted = getattr(obj, "_weighted_complete_hours", None)
-        if total is None or weighted is None:
-            from .progress import project_progress_data
+        from .progress import project_progress_data
 
-            return project_progress_data(obj).get("progress_percent")
-        total = total or Decimal("0")
-        weighted = weighted or Decimal("0")
-        if total <= 0:
-            return None
-        return float((weighted / total * Decimal("100")).quantize(Decimal("0.01")))
+        return project_progress_data(obj).get("progress_percent")
 
     def validate(self, attrs):
         request = self.context.get("request")
@@ -506,17 +498,9 @@ class MilestoneSerializer(serializers.ModelSerializer):
         return obj.created_by.get_full_name().strip() or obj.created_by.email
 
     def get_progress_percent(self, obj):
-        total = getattr(obj, "_total_estimated_hours", None)
-        weighted = getattr(obj, "_weighted_complete_hours", None)
-        if total is None or weighted is None:
-            from .progress import milestone_progress_data
+        from .progress import milestone_progress_data
 
-            return milestone_progress_data(obj).get("progress_percent")
-        total = total or Decimal("0")
-        weighted = weighted or Decimal("0")
-        if total <= 0:
-            return None
-        return float((weighted / total * Decimal("100")).quantize(Decimal("0.01")))
+        return milestone_progress_data(obj).get("progress_percent")
 
     def validate(self, attrs):
         if "document" in attrs:
@@ -549,6 +533,8 @@ class TaskSerializer(serializers.ModelSerializer):
     milestone_document = serializers.FileField(source="milestone.document", read_only=True)
     total_time_spent_display = serializers.SerializerMethodField(read_only=True)
     timer_state = serializers.SerializerMethodField(read_only=True)
+    progress_percent = serializers.SerializerMethodField(read_only=True)
+    planned_hours = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Task
@@ -574,10 +560,23 @@ class TaskSerializer(serializers.ModelSerializer):
             "total_time_spent_seconds",
             "total_time_spent_display",
             "timer_state",
+            "progress_percent",
+            "planned_hours",
             "created_at",
             "updated_at",
         ]
         read_only_fields = ["id", "created_by", "total_time_spent_seconds", "created_at", "updated_at"]
+
+    def get_progress_percent(self, obj) -> float:
+        from .progress import task_progress_percent
+
+        return task_progress_percent(obj)
+
+    def get_planned_hours(self, obj):
+        from .progress import planned_hours_for_task
+
+        ph = planned_hours_for_task(obj)
+        return float(ph) if ph > 0 else None
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
