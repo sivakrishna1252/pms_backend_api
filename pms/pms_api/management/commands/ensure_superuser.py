@@ -33,6 +33,24 @@ class Command(BaseCommand):
         existing = User.objects.filter(**lookup).first()
         if existing:
             if getattr(existing, "is_staff", False):
+                if _truthy_env("DJANGO_SUPERUSER_PROMOTE_EXISTING"):
+                    existing.is_staff = True
+                    existing.is_superuser = True
+                    existing.set_password(password)
+                    if email:
+                        setattr(existing, "email", email)
+                    update_fields = ["is_staff", "is_superuser", "password"]
+                    if email:
+                        update_fields.append("email")
+                    existing.save(update_fields=update_fields)
+                    self.stdout.write(
+                        self.style.SUCCESS(
+                            f"Updated existing staff/superuser {username!r} "
+                            f"(DJANGO_SUPERUSER_PROMOTE_EXISTING=true)."
+                        )
+                    )
+                    return
+
                 self.stdout.write(
                     self.style.WARNING(
                         f"User {username!r} already exists with is_staff=True; not changing "
