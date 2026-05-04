@@ -604,13 +604,9 @@ class TaskSerializer(serializers.ModelSerializer):
         return humanize_duration(getattr(obj, "total_time_spent_seconds", None))
 
     def get_timer_state(self, obj) -> str | None:
-        """STARTED when assignee has an open TimeLog; otherwise None (idle / not running)."""
-        assignee_id = obj.assigned_to_id
-        if not assignee_id:
-            return None
-        if TimeLog.objects.filter(task=obj, user_id=assignee_id, end_time__isnull=True).exists():
-            return "STARTED"
-        return None
+        from .timer_state import assignee_timer_state
+
+        return assignee_timer_state(obj)
 
     def validate(self, attrs):
         from datetime import date, datetime

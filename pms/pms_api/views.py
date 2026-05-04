@@ -23,6 +23,7 @@ from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 
 from .ai_readonly_context import build_readonly_context_text
 from .models import FileAttachment, Milestone, Notification, Project, Task, TimeLog, UserProfile, humanize_duration
+from .timer_state import assignee_timer_state
 from .ollama_client import OllamaClientError, ollama_chat
 from .progress import milestone_progress_data, project_progress_data
 from .pagination import StandardResultsSetPagination
@@ -1569,12 +1570,10 @@ class WorkTrackingAPIView(APIView):
         records = []
         for task in tasks_qs:
             active_log = TimeLog.objects.filter(task=task, end_time__isnull=True).order_by("-start_time").first()
-            if active_log:
-                timer_state = "STARTED"
-            elif task.status == Task.Status.PAUSED:
-                timer_state = "PAUSED"
-            else:
-                timer_state = "STOPPED"
+            timer_state = assignee_timer_state(task)
+            # No TimeLogs yet: keep rows consistent for filters/summary (NOT_STARTED leaves null).
+            if timer_state is None and task.status != Task.Status.NOT_STARTED:
+                timer_state = "PAUSED" if task.status == Task.Status.PAUSED else "STOPPED"
 
             if only_active and only_active.lower() == "true" and timer_state != "STARTED":
                 continue
@@ -1653,11 +1652,7 @@ class WorkTrackingAPIView(APIView):
                 "delayed_count": len([item for item in records if item["task_status"] == Task.Status.DELAYED]),
                 "completed_count": len([item for item in records if item["task_status"] == Task.Status.COMPLETED]),
                 "auto_stopped_count": len(
-                    [
-                        item
-                        for item in records
-                        if item["timer_state"] == "STOPPED" and item.get("last_stop_source") == TimeLog.Source.AUTO_STOP_8PM
-                    ]
+                    [item for item in records if item["timer_state"] == "AUTO_STOPPED"]
                 ),
             },
             "work_tracking": records,
