@@ -26,52 +26,52 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                sh """
-                    cd ${PROJECT_DIR}
-                    if [ ! -f ${ENV_FILE} ]; then
-                        if [ -f .env.example ]; then
-                            cp .env.example ${ENV_FILE}
-                            echo "${ENV_FILE} created from .env.example"
-                        else
-                            touch ${ENV_FILE}
-                            echo "${ENV_FILE} created as empty fallback"
-                        fi
-                    fi
-                    docker build -f Dockerfile.prod -t ${IMAGE_NAME}:${BUILD_NUMBER} -t ${IMAGE_NAME}:latest .
-                """
+                withCredentials([file(credentialsId: "${ENV_ID}", variable: 'PMS_ENV_FILE')]) {
+                    sh """
+                        cd ${PROJECT_DIR}
+                        cp "\$PMS_ENV_FILE" ${ENV_FILE}
+                        echo "${ENV_FILE} refreshed from Jenkins credential ${ENV_ID}"
+                        docker build -f Dockerfile.prod -t ${IMAGE_NAME}:${BUILD_NUMBER} -t ${IMAGE_NAME}:latest .
+                    """
+                }
             }
         }
 
         stage('Validate App') {
             steps {
-                sh """
-                    cd ${PROJECT_DIR}
-                    docker run --rm --env-file ${ENV_FILE} -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" ${IMAGE_NAME}:${BUILD_NUMBER} python manage.py check
-                """
+                withCredentials([file(credentialsId: "${ENV_ID}", variable: 'PMS_ENV_FILE')]) {
+                    sh """
+                        cd ${PROJECT_DIR}
+                        cp "\$PMS_ENV_FILE" ${ENV_FILE}
+                        docker run --rm --env-file ${ENV_FILE} -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" ${IMAGE_NAME}:${BUILD_NUMBER} python manage.py check
+                    """
+                }
             }
         }
 
         stage('Deploy') {
             steps {
+                withCredentials([file(credentialsId: "${ENV_ID}", variable: 'PMS_ENV_FILE')]) {
+                    sh """
+                        cd ${PROJECT_DIR}
+                        cp "\$PMS_ENV_FILE" ${ENV_FILE}
+                        docker rm -f ${APP_NAME} || true
+                        docker run -d \\
+                          --name ${APP_NAME} \\
+                          --restart unless-stopped \\
+                          --env-file ${ENV_FILE} \\
+                          -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" \\
+                          -p ${HOST_PORT}:${CONTAINER_PORT} \\
+                          ${IMAGE_NAME}:${BUILD_NUMBER}
+                    """
+                }
+            }
+        }
+
+        stage('Verify Deployment Login') {
+            steps {
                 sh """
-                    cd ${PROJECT_DIR}
-                    if [ ! -f ${ENV_FILE} ]; then
-                        if [ -f .env.example ]; then
-                            cp .env.example ${ENV_FILE}
-                            echo "${ENV_FILE} created from .env.example"
-                        else
-                            touch ${ENV_FILE}
-                            echo "${ENV_FILE} created as empty fallback"
-                        fi
-                    fi
-                    docker rm -f ${APP_NAME} || true
-                    docker run -d \\
-                      --name ${APP_NAME} \\
-                      --restart unless-stopped \\
-                      --env-file ${ENV_FILE} \\
-                      -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" \\
-                      -p ${HOST_PORT}:${CONTAINER_PORT} \\
-                      ${IMAGE_NAME}:${BUILD_NUMBER}
+                    docker exec ${APP_NAME} python manage.py shell -c "from django.contrib.auth import authenticate, get_user_model; from django.db import connection; User=get_user_model(); email='admin@apparatus.solutions'; user=User.objects.filter(email__iexact=email).first(); print('db_host:', connection.settings_dict.get('HOST')); print('db_name:', connection.settings_dict.get('NAME')); print('admin_exists:', bool(user)); print('admin_username:', user.username if user else None); print('admin_email:', user.email if user else None); print('admin_is_active:', user.is_active if user else None); print('admin_role:', getattr(getattr(user, 'profile', None), 'role', None) if user else None); print('admin_auth_ok:', authenticate(username=(user.get_username() if user else email), password='admin12') is not None)"
                 """
             }
         }
