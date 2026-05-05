@@ -22,12 +22,15 @@ from django.conf.urls.static import static
 from django.views.static import serve
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
 import pms_api.schema  # Register OpenAPI auth extension for docs generation.
+from pms.bundled_media import api_master_guide_md
 
 
 def home(request):
     return JsonResponse({"message":"Welcome to Project Management System backend"})
 
 urlpatterns = [
+    # Bundled doc: always served from repo root ( survives empty MEDIA_ROOT / failed copy ).
+    path("media/project_docs/API_MASTER_GUIDE.md", api_master_guide_md),
     path('admin/', admin.site.urls),
     path('',home),
     path("api/v1/", include("pms_api.urls")),
@@ -46,6 +49,6 @@ else:
             re_path(
                 rf"^{media_prefix}/(?P<path>.*)$",
                 serve,
-                {"document_root": settings.MEDIA_ROOT},
+                {"document_root": str(settings.MEDIA_ROOT.resolve())},
             ),
         ]
