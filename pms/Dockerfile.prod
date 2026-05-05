@@ -12,9 +12,14 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
 
+# Jenkins builds this image (not Dockerfile). Put bundled docs under MEDIA_ROOT so
+# /media/project_docs/API_MASTER_GUIDE.md exists before the first request.
+RUN mkdir -p /app/media/project_docs && \
+    if [ -f /app/API_MASTER_GUIDE.md ]; then cp /app/API_MASTER_GUIDE.md /app/media/project_docs/API_MASTER_GUIDE.md; fi
+
 RUN chown -R app:app /app
 USER app
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "python manage.py migrate && python manage.py ensure_superuser && gunicorn pms.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"]
+CMD ["sh", "-c", "python manage.py migrate && python manage.py sync_bundled_docs && python manage.py ensure_superuser && gunicorn pms.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"]
