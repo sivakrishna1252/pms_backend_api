@@ -62,6 +62,7 @@ pipeline {
                           --env-file ${ENV_FILE} \\
                           -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" \\
                           -p ${HOST_PORT}:${CONTAINER_PORT} \\
+                          -v ${APP_NAME}_media:/app/media \\
                           ${IMAGE_NAME}:${BUILD_NUMBER}
                     """
                 }
