@@ -15,10 +15,11 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import include, path, re_path
 from django.http import JsonResponse
 from django.conf import settings
 from django.conf.urls.static import static
+from django.views.static import serve
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
 import pms_api.schema  # Register OpenAPI auth extension for docs generation.
 
@@ -33,4 +34,18 @@ urlpatterns = [
     path("api/schema/", SpectacularAPIView.as_view(), name="api-schema"),
     path("api/docs/swagger/", SpectacularSwaggerView.as_view(url_name="api-schema"), name="swagger-ui"),
     path("api/docs/redoc/", SpectacularRedocView.as_view(url_name="api-schema"), name="redoc-ui"),
-] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+else:
+    # django.conf.urls.static.static() only registers when DEBUG — still serve user uploads in prod.
+    media_prefix = settings.MEDIA_URL.lstrip("/").rstrip("/")
+    if media_prefix:
+        urlpatterns += [
+            re_path(
+                rf"^{media_prefix}/(?P<path>.*)$",
+                serve,
+                {"document_root": settings.MEDIA_ROOT},
+            ),
+        ]
