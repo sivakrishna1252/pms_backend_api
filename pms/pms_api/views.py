@@ -1335,12 +1335,33 @@ class FileAttachmentViewSet(viewsets.ModelViewSet):
         if role == UserProfile.Roles.EMPLOYEE:
             # Employee can view docs linked to their assigned tasks,
             # including project-level and milestone-level docs in the same scope.
-            return base_qs.filter(
+            qs = base_qs.filter(
                 Q(task__assigned_to=self.request.user)
                 | Q(milestone__tasks__assigned_to=self.request.user)
                 | Q(project__tasks__assigned_to=self.request.user)
             ).distinct()
-        return base_qs
+        else:
+            qs = base_qs
+
+        def _parse_id(key: str) -> int | None:
+            raw = self.request.query_params.get(key)
+            if raw in (None, ""):
+                return None
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+
+        project_id = _parse_id("project")
+        if project_id is not None:
+            qs = qs.filter(project_id=project_id)
+        milestone_id = _parse_id("milestone")
+        if milestone_id is not None:
+            qs = qs.filter(milestone_id=milestone_id)
+        task_id = _parse_id("task")
+        if task_id is not None:
+            qs = qs.filter(task_id=task_id)
+        return qs
 
     @extend_schema(request=FileUploadRequestSerializer, responses={201: FileAttachmentSerializer})
     def create(self, request, *args, **kwargs):

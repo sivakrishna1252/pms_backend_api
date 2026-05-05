@@ -20,7 +20,7 @@ from .models import (
 )
 User = get_user_model()
 
-ALLOWED_DOCUMENT_EXTENSIONS = {".doc", ".docx", ".md"}
+ALLOWED_DOCUMENT_EXTENSIONS = {".docx", ".md"}
 
 
 def validate_uploaded_document(value):
@@ -30,7 +30,7 @@ def validate_uploaded_document(value):
         raise serializers.ValidationError("Upload a valid file using multipart/form-data.")
     extension = Path(value.name or "").suffix.lower()
     if extension not in ALLOWED_DOCUMENT_EXTENSIONS:
-        raise serializers.ValidationError("Only .doc, .docx, and .md files are allowed.")
+        raise serializers.ValidationError("Only .docx and .md files are allowed.")
     return value
 
 
@@ -717,7 +717,7 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 #file attachment serializer
 class FileAttachmentSerializer(serializers.ModelSerializer):
-    ALLOWED_FILE_EXTENSIONS = {".doc", ".docx", ".md"}
+    ALLOWED_FILE_EXTENSIONS = {".docx", ".md"}
 
     project_name = serializers.SerializerMethodField(read_only=True)
     milestone_name = serializers.SerializerMethodField(read_only=True)
@@ -818,7 +818,7 @@ class FileAttachmentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Upload a valid file using multipart/form-data.")
         extension = Path(value.name or "").suffix.lower()
         if extension not in self.ALLOWED_FILE_EXTENSIONS:
-            raise serializers.ValidationError("Only .doc, .docx, and .md files are allowed.")
+            raise serializers.ValidationError("Only .docx and .md files are allowed.")
         return value
 
     def validate(self, attrs):
@@ -858,6 +858,11 @@ class FileUploadRequestSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 "Provide exactly one link field: project or milestone or task."
             )
+        upload = attrs.get("file")
+        if upload is not None:
+            ext = Path(getattr(upload, "name", "") or "").suffix.lower()
+            if ext not in ALLOWED_DOCUMENT_EXTENSIONS:
+                raise serializers.ValidationError({"file": "Only .docx and .md files are allowed."})
         return attrs
 
 
