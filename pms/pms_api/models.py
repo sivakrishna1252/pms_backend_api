@@ -46,19 +46,12 @@ class UserProfile(TimeStampedModel):
         FRONTEND = "FRONTEND", "Frontend"
         FULLSTACK = "FULLSTACK", "Fullstack"
 
-    class TechStack(models.TextChoices):
-        PYTHON = "PYTHON", "Python"
-        JAVA = "JAVA", "Java"
-        NESTJS = "NESTJS", "NestJS"
-        NEXTJS = "NEXTJS", "NextJS"
-        REACT = "REACT", "React"
-
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
     role = models.CharField(max_length=20, choices=Roles.choices, default=Roles.EMPLOYEE)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
     experience_level = models.CharField(max_length=20, choices=ExperienceLevel.choices, blank=True)
     department = models.CharField(max_length=20, choices=Department.choices, blank=True)
-    tech_stack = models.CharField(max_length=20, choices=TechStack.choices, blank=True)
+    tech_stack = models.CharField(max_length=100, blank=True)
     tech_notes = models.TextField(blank=True, default="")
 
     def __str__(self):
@@ -165,7 +158,10 @@ class Task(TimeStampedModel):
         decimal_places=2,
         default=Decimal("0"),
         validators=[MinValueValidator(Decimal("0"))],
-        help_text="Planned effort (hours). If 0, planned hours for progress derive from task deadline vs created date (inclusive days × 8).",
+        help_text=(
+            "Planned effort for weighted progress; COMPLETED tasks count "
+            "full weight toward progress."
+        ),
     )
     total_time_spent_seconds = models.PositiveIntegerField(default=0, validators=[MinValueValidator(0)])
 

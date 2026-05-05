@@ -173,10 +173,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         choices=UserProfile.Department.choices, required=False, allow_blank=True, default=""
         , normalizer=lambda v: normalize_choice_input(v, UserProfile.Department)
     )
-    tech_stack = FlexibleChoiceField(
-        choices=UserProfile.TechStack.choices, required=False, allow_blank=True, default=""
-        , normalizer=lambda v: normalize_choice_input(v, UserProfile.TechStack)
-    )
+    tech_stack = serializers.CharField(required=False, allow_blank=True, default="", max_length=100)
     tech_notes = serializers.CharField(required=False, allow_blank=True, default="", max_length=4000)
 
     class Meta:
@@ -239,8 +236,6 @@ class UserCreateSerializer(serializers.ModelSerializer):
                     {"tech_stack": "Select at least one tech stack or add notes for employees."}
                 )
             attrs["tech_notes"] = attrs.get("tech_notes") or ""
-            if tech_stack == "":
-                attrs["tech_stack"] = UserProfile.TechStack.PYTHON
         else:
             attrs["experience_level"] = ""
             attrs["department"] = ""
@@ -306,12 +301,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         allow_blank=True,
         normalizer=lambda v: normalize_choice_input(v, UserProfile.Department),
     )
-    tech_stack = FlexibleChoiceField(
-        choices=UserProfile.TechStack.choices,
-        required=False,
-        allow_blank=True,
-        normalizer=lambda v: normalize_choice_input(v, UserProfile.TechStack),
-    )
+    tech_stack = serializers.CharField(required=False, allow_blank=True, max_length=100)
     tech_notes = serializers.CharField(required=False, allow_blank=True, max_length=4000)
 
     class Meta:
