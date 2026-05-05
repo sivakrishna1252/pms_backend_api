@@ -419,6 +419,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 class ProjectSerializer(serializers.ModelSerializer):
     created_by_name = serializers.SerializerMethodField(read_only=True)
     progress_percent = serializers.SerializerMethodField(read_only=True)
+    documents_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Project
@@ -431,6 +432,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "start_date",
             "deadline",
             "document",
+            "documents_count",
             "status",
             "progress_percent",
             "created_at",
@@ -447,6 +449,13 @@ class ProjectSerializer(serializers.ModelSerializer):
         from .progress import project_progress_data
 
         return project_progress_data(obj).get("progress_percent")
+
+    def get_documents_count(self, obj) -> int:
+        attachment_total = getattr(obj, "files_attachment_count", None)
+        if attachment_total is None:
+            attachment_total = FileAttachment.objects.filter(project_id=obj.pk).count()
+        primary = 1 if (getattr(obj, "document", None) and getattr(obj.document, "name", "")) else 0
+        return primary + attachment_total
 
     def validate(self, attrs):
         request = self.context.get("request")

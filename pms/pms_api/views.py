@@ -720,7 +720,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        queryset = Project.objects.annotate(files_attachment_count=Count("files", distinct=True)).order_by(
+            "-created_at"
+        )
         if user_role(self.request.user) == UserProfile.Roles.EMPLOYEE:
             return queryset.filter(tasks__assigned_to=self.request.user).distinct()
         return queryset
