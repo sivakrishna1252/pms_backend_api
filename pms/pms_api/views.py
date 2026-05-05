@@ -2025,6 +2025,11 @@ class MyTasksAPIView(APIView):
 
     @extend_schema(responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
-        tasks = Task.objects.filter(assigned_to=request.user).order_by("-created_at")
+        tasks = (
+            Task.objects.select_related("project", "milestone", "created_by", "assigned_to")
+            .prefetch_related("project__files")
+            .filter(assigned_to=request.user)
+            .order_by("-created_at")
+        )
         serializer = TaskSerializer(tasks, many=True, context={"request": request})
         return api_response(True, "My tasks fetched.", status.HTTP_200_OK, serializer.data)

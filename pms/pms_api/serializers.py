@@ -556,6 +556,7 @@ class TaskSerializer(serializers.ModelSerializer):
     project_name = serializers.CharField(source="project.name", read_only=True)
     milestone_name = serializers.CharField(source="milestone.name", read_only=True)
     project_document = serializers.FileField(source="project.document", read_only=True)
+    project_files = serializers.SerializerMethodField(read_only=True)
     milestone_document = serializers.FileField(source="milestone.document", read_only=True)
     total_time_spent_display = serializers.SerializerMethodField(read_only=True)
     timer_state = serializers.SerializerMethodField(read_only=True)
@@ -569,6 +570,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "project",
             "project_name",
             "project_document",
+            "project_files",
             "milestone",
             "milestone_name",
             "milestone_document",
@@ -597,6 +599,19 @@ class TaskSerializer(serializers.ModelSerializer):
         from .progress import task_progress_percent
 
         return task_progress_percent(obj)
+
+    def get_project_files(self, obj):
+        if not obj.project_id:
+            return []
+        files_qs = obj.project.files.all().order_by("-created_at")
+        return [
+            {
+                "id": file_obj.id,
+                "file": file_obj.file.url if file_obj.file else "",
+            }
+            for file_obj in files_qs
+            if file_obj.file
+        ]
 
     def get_planned_hours(self, obj):
         from .progress import planned_hours_for_task
