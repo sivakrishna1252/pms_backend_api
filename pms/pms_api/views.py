@@ -119,6 +119,59 @@ def api_response(success, message, code, data=None):
     )
 
 
+def _deadline_change_notification_message(
+    *,
+    kind,
+    item_name: str,
+    requester,
+    old_deadline,
+    new_deadline,
+    reason: str = "",
+) -> str:
+    """In-app notification text: who asked, entity name, old date → new date (aligned with email)."""
+
+    def _fmt(d):
+        if d is None:
+            return "none"
+        if hasattr(d, "isoformat"):
+            return d.isoformat()
+        return str(d)
+
+    who = (requester.get_full_name() or "").strip() or getattr(requester, "email", None) or "User"
+    old_s = _fmt(old_deadline)
+    new_s = _fmt(new_deadline)
+    if kind == "task":
+        base = (
+            f"{who} requested changing the deadline for task '{item_name}' "
+            f"from {old_s} to {new_s}."
+        )
+    else:
+        base = (
+            f"{who} requested changing the project '{item_name}' deadline "
+            f"from {old_s} to {new_s}."
+        )
+    reason = (reason or "").strip()
+    if reason:
+        return f"{base} Reason: {reason}"
+    return base
+
+
+def _deadline_change_details_json(old_deadline, new_deadline):
+    """Structured fields for notification UI (survives alongside message text)."""
+
+    def _fmt(d):
+        if d is None:
+            return None
+        if hasattr(d, "isoformat"):
+            return d.isoformat()
+        return str(d)
+
+    return {
+        "deadline_from": _fmt(old_deadline),
+        "deadline_to": _fmt(new_deadline),
+    }
+
+
 def apply_automatic_task_status_rules():
     """Keep derived task states in sync.
     Rule: overdue non-final tasks automatically become DELAYED.
@@ -715,7 +768,15 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 user=admin_user,
                 type="PROJECT_DEADLINE_CHANGE_REQUEST",
                 title="Project deadline change requested",
-                message=f"BA requested deadline change for project '{project.name}'.",
+                message=_deadline_change_notification_message(
+                    kind="project",
+                    item_name=project.name,
+                    requester=request.user,
+                    old_deadline=project.deadline,
+                    new_deadline=new_deadline,
+                    reason=reason,
+                ),
+                details=_deadline_change_details_json(project.deadline, new_deadline),
                 ref_type=Notification.RefType.PROJECT,
                 ref_id=project.id,
             )
@@ -1195,7 +1256,15 @@ class TaskViewSet(viewsets.ModelViewSet):
                 user=owner,
                 type="TASK_DEADLINE_CHANGE_REQUEST",
                 title="Task deadline change requested",
-                message=f"Employee requested deadline change for task '{task.title}'.",
+                message=_deadline_change_notification_message(
+                    kind="task",
+                    item_name=task.title,
+                    requester=request.user,
+                    old_deadline=task.deadline,
+                    new_deadline=new_deadline,
+                    reason=reason,
+                ),
+                details=_deadline_change_details_json(task.deadline, new_deadline),
                 ref_type=Notification.RefType.TASK,
                 ref_id=task.id,
             )

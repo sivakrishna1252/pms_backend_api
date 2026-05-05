@@ -459,6 +459,12 @@ class ProjectSerializer(serializers.ModelSerializer):
         if self.instance and "deadline" in attrs and attrs["deadline"] != self.instance.deadline:
             if role != UserProfile.Roles.ADMIN:
                 raise serializers.ValidationError({"deadline": "Only Admin can modify project deadline."})
+        start_date = attrs.get("start_date", self.instance.start_date if self.instance else None)
+        deadline = attrs.get("deadline", self.instance.deadline if self.instance else None)
+        if start_date and deadline and deadline < start_date:
+            raise serializers.ValidationError(
+                {"deadline": "Expected date cannot be before the project start date."}
+            )
         return attrs
 
 
@@ -506,7 +512,18 @@ class MilestoneSerializer(serializers.ModelSerializer):
         if "document" in attrs:
             attrs["document"] = validate_uploaded_document(attrs["document"])
         project = attrs.get("project", self.instance.project if self.instance else None)
+        if project is not None and not isinstance(project, Project):
+            project = Project.objects.filter(pk=project).first()
+        start_date = attrs.get("start_date", self.instance.start_date if self.instance else None)
         end_date = attrs.get("end_date", self.instance.end_date if self.instance else None)
+        if start_date and end_date and end_date < start_date:
+            raise serializers.ValidationError(
+                {"end_date": "Expected date cannot be before the milestone start date."}
+            )
+        if project and start_date and start_date < project.start_date:
+            raise serializers.ValidationError(
+                {"start_date": "Milestone start cannot be before the project start date."}
+            )
         if project and end_date and end_date > project.deadline:
             raise serializers.ValidationError(
                 {"end_date": "Expected date cannot be after the project deadline."}
@@ -646,21 +663,31 @@ class TaskSerializer(serializers.ModelSerializer):
         deadline = _date_only(deadline)
 
         if deadline and project_id is not None:
-            proj_deadline = (
-                Project.objects.filter(pk=project_id).values_list("deadline", flat=True).first()
-            )
-            proj_deadline = _date_only(proj_deadline)
-            if proj_deadline is not None and deadline > proj_deadline:
-                raise serializers.ValidationError(
-                    {"deadline": "Expected date cannot be after the project deadline."}
-                )
+            proj = Project.objects.filter(pk=project_id).first()
+            if proj:
+                proj_deadline = _date_only(proj.deadline)
+                proj_start = proj.start_date
+                if proj_start is not None and deadline < proj_start:
+                    raise serializers.ValidationError(
+                        {"deadline": "Expected date cannot be before the project start date."}
+                    )
+                if proj_deadline is not None and deadline > proj_deadline:
+                    raise serializers.ValidationError(
+                        {"deadline": "Expected date cannot be after the project deadline."}
+                    )
         if deadline and milestone_id is not None:
-            ms_end = Milestone.objects.filter(pk=milestone_id).values_list("end_date", flat=True).first()
-            ms_end = _date_only(ms_end)
-            if ms_end is not None and deadline > ms_end:
-                raise serializers.ValidationError(
-                    {"deadline": "Expected date cannot be after the milestone end date."}
-                )
+            ms = Milestone.objects.filter(pk=milestone_id).first()
+            if ms:
+                ms_end = _date_only(ms.end_date)
+                ms_start = ms.start_date
+                if ms_start is not None and deadline < ms_start:
+                    raise serializers.ValidationError(
+                        {"deadline": "Expected date cannot be before the milestone start date."}
+                    )
+                if ms_end is not None and deadline > ms_end:
+                    raise serializers.ValidationError(
+                        {"deadline": "Expected date cannot be after the milestone end date."}
+                    )
         return attrs
 
 

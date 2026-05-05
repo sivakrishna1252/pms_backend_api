@@ -229,6 +229,8 @@ class Notification(TimeStampedModel):
     ref_type = models.CharField(max_length=20, choices=RefType.choices, blank=True)
     ref_id = models.PositiveIntegerField(null=True, blank=True)
     is_read = models.BooleanField(default=False)
+    # Structured payload for UI (e.g. deadline change from/to); optional for legacy rows.
+    details = models.JSONField(null=True, blank=True)
 
 
 
