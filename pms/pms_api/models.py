@@ -41,16 +41,11 @@ class UserProfile(TimeStampedModel):
         JUNIOR = "JUNIOR", "Junior"
         SENIOR = "SENIOR", "Senior"
 
-    class Department(models.TextChoices):
-        BACKEND = "BACKEND", "Backend"
-        FRONTEND = "FRONTEND", "Frontend"
-        FULLSTACK = "FULLSTACK", "Fullstack"
-
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
     role = models.CharField(max_length=20, choices=Roles.choices, default=Roles.EMPLOYEE)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
     experience_level = models.CharField(max_length=20, choices=ExperienceLevel.choices, blank=True)
-    department = models.CharField(max_length=20, choices=Department.choices, blank=True)
+    department = models.CharField(max_length=100, blank=True, default="")
     tech_stack = models.CharField(max_length=100, blank=True)
     tech_notes = models.TextField(blank=True, default="")
 

@@ -169,10 +169,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
             aliases={"JR": UserProfile.ExperienceLevel.JUNIOR, "SR": UserProfile.ExperienceLevel.SENIOR},
         )
     )
-    department = FlexibleChoiceField(
-        choices=UserProfile.Department.choices, required=False, allow_blank=True, default=""
-        , normalizer=lambda v: normalize_choice_input(v, UserProfile.Department)
-    )
+    department = serializers.CharField(required=False, allow_blank=True, default="", max_length=100)
     tech_stack = serializers.CharField(required=False, allow_blank=True, default="", max_length=100)
     tech_notes = serializers.CharField(required=False, allow_blank=True, default="", max_length=4000)
 
@@ -214,7 +211,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
 
         role = attrs.get("role")
         experience_level = attrs.get("experience_level", "")
-        department = attrs.get("department", "")
+        department = (attrs.get("department") or "").strip()
         tech_stack = (attrs.get("tech_stack") or "").strip()
         tech_notes_stripped = (attrs.get("tech_notes") or "").strip()
 
@@ -295,12 +292,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             aliases={"JR": UserProfile.ExperienceLevel.JUNIOR, "SR": UserProfile.ExperienceLevel.SENIOR},
         ),
     )
-    department = FlexibleChoiceField(
-        choices=UserProfile.Department.choices,
-        required=False,
-        allow_blank=True,
-        normalizer=lambda v: normalize_choice_input(v, UserProfile.Department),
-    )
+    department = serializers.CharField(required=False, allow_blank=True, max_length=100)
     tech_stack = serializers.CharField(required=False, allow_blank=True, max_length=100)
     tech_notes = serializers.CharField(required=False, allow_blank=True, max_length=4000)
 
@@ -357,7 +349,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             profile.experience_level = experience_level
             profile_changed_fields.append("experience_level")
         if department is not None:
-            profile.department = department
+            profile.department = department.strip()
             profile_changed_fields.append("department")
         if tech_stack is not None:
             profile.tech_stack = tech_stack

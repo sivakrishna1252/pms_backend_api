@@ -850,7 +850,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         description=(
             "Returns progress_percent as a planned-hours-weighted average of task progress. "
             "Per-task: NOT_STARTED 0%, COMPLETED 100%, otherwise min(worked_hours/planned_hours×100, 95%). "
-            "Planned hours = estimated_hours if set, else (deadline − created date, inclusive days) × 8. "
+            "Planned hours = estimated_hours if set, else weekday count from created date to deadline × 8. "
             "Worked hours = tracked time (including active timer). "
             "progress_percent is null when no task has derivable planned hours."
         ),

@@ -2,7 +2,7 @@
 
 Each task has a *planned* duration (hours) and *worked* time from the timer.
 
-- Planned hours: `Task.estimated_hours` when > 0; otherwise inclusive calendar days
+- Planned hours: `Task.estimated_hours` when > 0; otherwise inclusive working days
   from `created_at` to the best available end anchor × 8 h/day:
   `task.deadline`, else milestone `end_date`, else project `deadline`.
 
@@ -23,6 +23,7 @@ Rollup: weighted average by planned hours over tasks that have planned > 0.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db.models import Sum
@@ -40,7 +41,7 @@ def _quantize_percent(value: Decimal) -> float:
 
 
 def _planned_end_anchor_date(task: Task):
-    """Date used with task created_at for inclusive day span × 8h."""
+    """Date used with task created_at for inclusive working-day span × 8h."""
     if task.deadline is not None:
         return task.deadline
     m = getattr(task, "milestone", None)
@@ -50,6 +51,20 @@ def _planned_end_anchor_date(task: Task):
     if p is not None and getattr(p, "deadline", None):
         return p.deadline
     return None
+
+
+def _working_days_inclusive(start, end) -> int:
+    """Count Monday-Friday days between two dates, inclusive."""
+    if end < start:
+        return 1
+
+    days = 0
+    current = start
+    while current <= end:
+        if current.weekday() < 5:
+            days += 1
+        current += timedelta(days=1)
+    return max(days, 1)
 
 
 def planned_hours_for_task(task: Task) -> Decimal:
@@ -67,9 +82,7 @@ def planned_hours_for_task(task: Task) -> Decimal:
     else:
         start = timezone.localdate()
 
-    days = (end - start).days + 1
-    if days < 1:
-        days = 1
+    days = _working_days_inclusive(start, end)
     return Decimal(days) * WORKING_HOURS_PER_DAY
 
 
