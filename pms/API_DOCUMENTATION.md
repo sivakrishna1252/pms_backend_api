@@ -589,7 +589,13 @@ python manage.py send_deadline_notifications
 ```
 
 What it does:
-- At/after 8:00 PM local time, any active task timers are auto-stopped and reminder mail is sent to those employees
+- **Running timers only** (`TimeLog` with no `end_time`). **Paused tasks are never touched** (pause already closed the session).
+- **8:00 PM (first pass, Mon–Fri):** Auto-stops running timers where **last activity** was **not** near 8 PM (forgot to stop/pause). Sends email.
+- **8:00 PM deferral:** Running timers with **last activity within 1 hour of 8 PM** (start, or employee work-tracking refresh) are left running until 9 PM.
+- **9:00 PM (final pass):** Auto-stops **all** timers still running. Sends email.
+- Schedule twice on weekdays: `0 20,21 * * 1-5`
+- Settings: `AUTO_STOP_CUTOFF_HOUR` (20), `AUTO_STOP_CUTOFF_MINUTE` (0), `AUTO_STOP_GRACE_HOURS` (1)
+- Test: `python manage.py send_deadline_notifications --force-auto-stop`
 - Project due tomorrow and not completed -> mail to all active Admin + BA users
 - Project overdue and not completed -> status auto-set to `DELAYED` + mail to Admin + BA
 - Milestone overdue and not completed -> status auto-set to `DELAYED` + mail to milestone creator

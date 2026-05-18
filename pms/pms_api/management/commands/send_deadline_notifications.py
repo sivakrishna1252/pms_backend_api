@@ -1,4 +1,4 @@
-from datetime import time, timedelta
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -7,20 +7,26 @@ from django.core.mail import send_mail
 from django.utils import timezone
 
 from pms_api.models import Milestone, Notification, Project, Task, TimeLog, UserProfile
-from pms_api.views import _send_styled_email
+from pms_api.timer_auto_stop import (
+    auto_stop_time_log,
+    resolve_auto_stop_phase,
+    running_time_logs_queryset,
+    should_auto_stop_at_first_pass,
+)
+from pms_api.views import _send_styled_email, _sync_parent_statuses_for_task
 
 
 User = get_user_model()
 
 
 class Command(BaseCommand):
-    help = "Send project/milestone/task deadline alert emails."
+    help = "Send project/milestone/task deadline alert emails and auto-stop open task timers."
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--force-auto-stop",
             action="store_true",
-            help="Force auto-stop active timers immediately (ignore cutoff time).",
+            help="Force final auto-stop for all active timers (ignore time windows).",
         )
 
     def handle(self, *args, **options):
@@ -48,46 +54,98 @@ class Command(BaseCommand):
     def _auto_stop_active_timers(self, force=False):
         cutoff_hour = int(getattr(settings, "AUTO_STOP_CUTOFF_HOUR", 20))
         cutoff_minute = int(getattr(settings, "AUTO_STOP_CUTOFF_MINUTE", 0))
-        cutoff_time = time(hour=cutoff_hour, minute=cutoff_minute)
+        grace_hours = int(getattr(settings, "AUTO_STOP_GRACE_HOURS", 1))
 
         now_local = timezone.localtime()
         is_weekday = now_local.weekday() <= 4  # Monday=0 ... Friday=4
         if not force and not is_weekday:
             return
-        if not force and now_local.time() < cutoff_time:
+
+        phase = resolve_auto_stop_phase(
+            now_local,
+            cutoff_hour=cutoff_hour,
+            cutoff_minute=cutoff_minute,
+            grace_hours=grace_hours,
+            force=force,
+        )
+        if phase is None:
             return
 
-        active_logs = TimeLog.objects.select_related("task", "user").filter(end_time__isnull=True)
-        if not active_logs.exists():
+        cutoff_dt = now_local.replace(
+            hour=cutoff_hour, minute=cutoff_minute, second=0, microsecond=0
+        )
+        final_hour = (cutoff_dt + timedelta(hours=grace_hours)).strftime("%H:%M")
+
+        active_logs = list(running_time_logs_queryset())
+        if not active_logs:
             return
 
         stopped_by_user = {}
+        deferred_count = 0
+
         for log in active_logs:
-            log.stop(source=TimeLog.Source.AUTO_STOP_8PM)
+            if phase == "first" and not should_auto_stop_at_first_pass(
+                log, cutoff_dt, grace_hours
+            ):
+                deferred_count += 1
+                continue
+
+            auto_stop_time_log(log, sync_task_status=True)
+            _sync_parent_statuses_for_task(log.task)
+
             user_email = getattr(log.user, "email", None)
             if not user_email:
                 continue
-            stopped_by_user.setdefault(user_email, {"name": log.user.first_name or log.user.username, "tasks": []})
+            stopped_by_user.setdefault(
+                user_email,
+                {"name": log.user.first_name or log.user.username, "tasks": []},
+            )
             stopped_by_user[user_email]["tasks"].append(log.task.title)
+
+        if deferred_count and phase == "first":
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Deferred {deferred_count} running timer(s) with recent activity near "
+                    f"{cutoff_hour:02d}:{cutoff_minute:02d}; final auto-stop at {final_hour} if still running."
+                )
+            )
+
+        if not stopped_by_user:
+            return
 
         for email, payload in stopped_by_user.items():
             task_lines = ", ".join(payload["tasks"]) or "N/A"
+            if phase == "first":
+                subject = f"PMS Timer Auto-stopped at {cutoff_hour:02d}:{cutoff_minute:02d}"
+                intro = (
+                    f"You left task timer(s) running (forgot to stop or pause) after "
+                    f"{cutoff_hour:02d}:{cutoff_minute:02d} (Mon–Fri). PMS auto-stopped them."
+                )
+                reminder = (
+                    "Paused tasks were not changed. If you are still working, start the timer again. "
+                    f"Timers with recent activity near {cutoff_hour:02d}:{cutoff_minute:02d} are checked again at {final_hour}."
+                )
+            else:
+                subject = f"PMS Timer Auto-stopped at {final_hour}"
+                intro = (
+                    f"You still had running task timer(s) at the {final_hour} check "
+                    f"(Mon–Fri), so PMS auto-stopped them."
+                )
+                reminder = (
+                    "Please stop or pause your timer when you finish work. "
+                    "Paused tasks are never auto-stopped."
+                )
+
             _send_styled_email(
-                subject=f"PMS Timer Auto-stopped at {cutoff_hour:02d}:{cutoff_minute:02d}",
+                subject=subject,
                 recipient_list=[email],
                 greeting=f"Hi {payload['name']},",
-                intro_text=(
-                    f"You had active task timer(s) after {cutoff_hour:02d}:{cutoff_minute:02d} "
-                    "(Mon-Fri), so PMS auto-stopped them."
-                ),
+                intro_text=intro,
                 detail_rows=[
                     ("Auto-stopped Tasks", task_lines),
-                    ("Reminder", "Please remember to stop your timer when work is finished."),
+                    ("Reminder", reminder),
                 ],
             )
-
-
-
 
     def _send_project_deadline_alerts(self, today, tomorrow):
         admins_and_bas = User.objects.filter(

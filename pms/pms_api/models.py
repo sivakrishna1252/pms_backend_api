@@ -182,12 +182,23 @@ class TimeLog(TimeStampedModel):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="time_logs")
     start_time = models.DateTimeField()
     end_time = models.DateTimeField(null=True, blank=True)
+    last_activity_at = models.DateTimeField()
     duration_seconds = models.PositiveIntegerField(default=0)
     source = models.CharField(max_length=20, choices=Source.choices, default=Source.MANUAL_STOP)
 
     @property
     def is_active(self):
         return self.end_time is None
+
+    @property
+    def is_running(self):
+        """Open session only (paused/stopped sessions have end_time set)."""
+        return self.is_active
+
+    def touch_last_activity(self, when=None):
+        when = when or timezone.now()
+        self.last_activity_at = when
+        self.save(update_fields=["last_activity_at", "updated_at"])
 
     @property
     def duration_display(self):
@@ -197,9 +208,10 @@ class TimeLog(TimeStampedModel):
         if self.end_time:
             return
         self.end_time = timezone.now()
+        self.last_activity_at = self.end_time
         self.duration_seconds = int((self.end_time - self.start_time).total_seconds())
         self.source = source
-        self.save(update_fields=["end_time", "duration_seconds", "source"])
+        self.save(update_fields=["end_time", "last_activity_at", "duration_seconds", "source"])
         self.task.total_time_spent_seconds += self.duration_seconds
         self.task.save(update_fields=["total_time_spent_seconds"])
 

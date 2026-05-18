@@ -1119,7 +1119,13 @@ class TaskViewSet(viewsets.ModelViewSet):
             return api_response(False, "Only assigned employee can start this task.", status.HTTP_403_FORBIDDEN)
         if TimeLog.objects.filter(user=request.user, end_time__isnull=True).exists():
             return api_response(False, "You already have an active timer.", status.HTTP_400_BAD_REQUEST)
-        TimeLog.objects.create(task=task, user=request.user, start_time=timezone.now())
+        now = timezone.now()
+        TimeLog.objects.create(
+            task=task,
+            user=request.user,
+            start_time=now,
+            last_activity_at=now,
+        )
         task.status = Task.Status.IN_PROGRESS
         task.save(update_fields=["status"])
         _sync_parent_statuses_for_task(task)
@@ -1674,6 +1680,11 @@ class WorkTrackingAPIView(APIView):
             today_worked_seconds = sum(todays_logs.values_list("duration_seconds", flat=True))
             current_session_seconds = 0
             if active_log:
+                if (
+                    role == UserProfile.Roles.EMPLOYEE
+                    and task.assigned_to_id == request.user.id
+                ):
+                    active_log.touch_last_activity(when=now)
                 current_session_seconds = int((now - active_log.start_time).total_seconds())
                 if active_log.start_time.date() == today:
                     today_worked_seconds += current_session_seconds

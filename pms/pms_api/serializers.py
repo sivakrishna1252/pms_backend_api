@@ -6,7 +6,7 @@ from decimal import Decimal
 from django.core.files.uploadedfile import UploadedFile
 from pathlib import Path
 from rest_framework import serializers
-from rest_framework_simplejwt.tokens import RefreshToken
+from .tokens import PMSRefreshToken
 
 from .models import (
     FileAttachment,
@@ -350,6 +350,15 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             profile_changed_fields.append("experience_level")
         if department is not None:
             profile.department = department.strip()
+
+
+
+
+
+
+
+
+
             profile_changed_fields.append("department")
         if tech_stack is not None:
             profile.tech_stack = tech_stack
@@ -880,7 +889,7 @@ class AuthResponseSerializer(serializers.Serializer):
 
     @staticmethod
     def build(user):
-        refresh = RefreshToken.for_user(user)
+        refresh = PMSRefreshToken.for_user(user)
         return {"access": str(refresh.access_token), "refresh": str(refresh), "user": UserSerializer(user).data}
 
 

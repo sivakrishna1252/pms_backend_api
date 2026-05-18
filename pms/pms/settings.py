@@ -199,6 +199,10 @@ EMAIL_HOST_USER = os.getenv("SMTP_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("SMTP_PASS", "")
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
-# Auto-stop active timers cutoff (server local timezone via Django timezone.localtime()).
+# Auto-stop active timers (server local timezone via Django timezone.localtime()).
+# First pass at cutoff (default 8:00 PM): stop long-running timers; defer sessions started within grace window.
+# Final pass at cutoff + grace (default 9:00 PM): stop all remaining active timers.
+# Schedule: run `send_deadline_notifications` at both times on weekdays (e.g. cron 0 20,21 * * 1-5).
 AUTO_STOP_CUTOFF_HOUR = int(os.getenv("AUTO_STOP_CUTOFF_HOUR", "20"))
 AUTO_STOP_CUTOFF_MINUTE = int(os.getenv("AUTO_STOP_CUTOFF_MINUTE", "0"))
+AUTO_STOP_GRACE_HOURS = int(os.getenv("AUTO_STOP_GRACE_HOURS", "1"))
