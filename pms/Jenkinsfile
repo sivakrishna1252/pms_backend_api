@@ -7,7 +7,7 @@ pipeline {
         IMAGE_NAME = "pms-backend"
         ENV_ID = "pms_backend_env"
         ENV_FILE = ".env"
-        ALLOWED_HOSTS_VALUE = "127.0.0.1,localhost,187.127.139.247"
+        ALLOWED_HOSTS_VALUE = "127.0.0.1,localhost,187.127.139.247,nexus-pms.aspune.cloud"
         HOST_PORT = "6009"
         CONTAINER_PORT = "8000"
     }
