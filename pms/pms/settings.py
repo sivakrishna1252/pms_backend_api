@@ -134,6 +134,8 @@ USE_I18N = True
 
 USE_TZ = True
 
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
@@ -198,6 +200,9 @@ EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True").lower() == "true"
 EMAIL_HOST_USER = os.getenv("SMTP_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("SMTP_PASS", "")
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+
+# Shared secret for attendance service → in-app notifications (Bearer token).
+PMS_SERVICE_TOKEN = os.getenv("PMS_SERVICE_TOKEN", "").strip()
 
 # Auto-stop active timers (server local timezone via Django timezone.localtime()).
 # First pass at cutoff (default 8:00 PM): stop long-running timers; defer sessions started within grace window.

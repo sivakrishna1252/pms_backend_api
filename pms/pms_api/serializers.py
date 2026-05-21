@@ -728,6 +728,24 @@ class NotificationSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
 
+class InternalNotificationItemSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    type = serializers.CharField(max_length=100)
+    title = serializers.CharField(max_length=255)
+    message = serializers.CharField()
+    ref_type = serializers.ChoiceField(
+        choices=Notification.RefType.choices,
+        required=False,
+        allow_blank=True,
+    )
+    ref_id = serializers.IntegerField(required=False, allow_null=True)
+    details = serializers.JSONField(required=False, allow_null=True)
+
+
+class InternalNotificationCreateSerializer(serializers.Serializer):
+    notifications = InternalNotificationItemSerializer(many=True)
+
+
 
 
 #file attachment serializer

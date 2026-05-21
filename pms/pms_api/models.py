@@ -224,6 +224,7 @@ class Notification(TimeStampedModel):
         TASK = "TASK", "Task"
         MILESTONE = "MILESTONE", "Milestone"
         PROJECT = "PROJECT", "Project"
+        LEAVE = "LEAVE", "Leave"
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")
     type = models.CharField(max_length=100)

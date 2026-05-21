@@ -13,6 +13,10 @@ from .views import (
     MeAPIView,
     MilestoneViewSet,
     MyTasksAPIView,
+    InternalAdminUsersAPIView,
+    InternalNotificationCreateAPIView,
+    InternalStaffUsersAPIView,
+    InternalUserDetailAPIView,
     NotificationViewSet,
     ProjectViewSet,
     RefreshAPIView,
@@ -43,5 +47,25 @@ urlpatterns = [
     path("admin/reset-password", AdminPasswordResetAPIView.as_view(), name="admin-reset-password"),
     path("ba/dashboard", DashboardAPIView.as_view(), name="ba-dashboard"),
     path("employee/dashboard", DashboardAPIView.as_view(), name="employee-dashboard"),
+    path(
+        "internal/admin-users/",
+        InternalAdminUsersAPIView.as_view(),
+        name="internal-admin-users",
+    ),
+    path(
+        "internal/staff-users/",
+        InternalStaffUsersAPIView.as_view(),
+        name="internal-staff-users",
+    ),
+    path(
+        "internal/users/<int:user_id>/",
+        InternalUserDetailAPIView.as_view(),
+        name="internal-user-detail",
+    ),
+    path(
+        "internal/notifications/",
+        InternalNotificationCreateAPIView.as_view(),
+        name="internal-notifications",
+    ),
     path("", include(router.urls)),
 ]

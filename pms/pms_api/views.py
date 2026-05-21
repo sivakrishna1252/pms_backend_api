@@ -27,7 +27,7 @@ from .timer_state import assignee_timer_state
 from .ollama_client import OllamaClientError, ollama_chat
 from .progress import milestone_progress_data, project_progress_data
 from .pagination import StandardResultsSetPagination
-from .permissions import IsAdmin, IsAdminOrBA, user_role
+from .permissions import IsAdmin, IsAdminOrBA, IsServiceToken, user_role
 from .serializers import (
     AdminAIAskSerializer,
     AuthLoginSerializer,
@@ -41,6 +41,7 @@ from .serializers import (
     FileUploadRequestSerializer,
     MilestoneSerializer,
     MeUpdateSerializer,
+    InternalNotificationCreateSerializer,
     NotificationSerializer,
     ProjectSerializer,
     TaskSerializer,
@@ -1391,6 +1392,143 @@ class FileAttachmentViewSet(viewsets.ModelViewSet):
 
 
 
+
+
+@extend_schema(tags=["Common APIs"])
+class InternalAdminUsersAPIView(APIView):
+    """Service-to-service: list active admin users for leave alerts."""
+
+    authentication_classes = []
+    permission_classes = [IsServiceToken]
+
+    def get(self, request):
+        admins = (
+            User.objects.filter(
+                profile__role=UserProfile.Roles.ADMIN,
+                profile__status=UserProfile.Status.ACTIVE,
+            )
+            .select_related("profile")
+            .order_by("id")
+        )
+        payload = [
+            {
+                "id": user.id,
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "role": UserProfile.Roles.ADMIN,
+                "status": UserProfile.Status.ACTIVE,
+            }
+            for user in admins
+        ]
+        return api_response(
+            True,
+            "Admin users fetched.",
+            status.HTTP_200_OK,
+            {"results": payload},
+        )
+
+
+@extend_schema(tags=["Common APIs"])
+class InternalUserDetailAPIView(APIView):
+    """Service-to-service: user email/name for attendance emails."""
+
+    authentication_classes = []
+    permission_classes = [IsServiceToken]
+
+    def get(self, request, user_id):
+        user = User.objects.filter(pk=user_id).select_related("profile").first()
+        if not user:
+            return api_response(False, "User not found.", status.HTTP_404_NOT_FOUND)
+        profile = getattr(user, "profile", None)
+        return api_response(
+            True,
+            "User fetched.",
+            status.HTTP_200_OK,
+            {
+                "id": user.id,
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "role": getattr(profile, "role", "") or "",
+                "status": getattr(profile, "status", "") or "",
+                "department": getattr(profile, "department", "") or "",
+            },
+        )
+
+
+@extend_schema(tags=["Common APIs"])
+class InternalStaffUsersAPIView(APIView):
+    """Service-to-service: active Employee/BA users for attendance name resolution."""
+
+    authentication_classes = []
+    permission_classes = [IsServiceToken]
+
+    def get(self, request):
+        staff = (
+            User.objects.filter(
+                profile__role__in=[UserProfile.Roles.EMPLOYEE, UserProfile.Roles.BA],
+                profile__status=UserProfile.Status.ACTIVE,
+            )
+            .select_related("profile")
+            .order_by("id")
+        )
+        payload = [
+            {
+                "id": user.id,
+                "email": user.email,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "role": user.profile.role,
+                "status": user.profile.status,
+                "department": user.profile.department or "",
+            }
+            for user in staff
+        ]
+        return api_response(
+            True,
+            "Staff users fetched.",
+            status.HTTP_200_OK,
+            {"results": payload},
+        )
+
+
+@extend_schema(tags=["Common APIs"])
+class InternalNotificationCreateAPIView(APIView):
+    """Service-to-service: create in-app notifications (attendance leave flow)."""
+
+    authentication_classes = []
+    permission_classes = [IsServiceToken]
+
+    @extend_schema(
+        request=InternalNotificationCreateSerializer,
+        responses={201: OpenApiTypes.OBJECT},
+    )
+    def post(self, request):
+        serializer = InternalNotificationCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        created_ids = []
+        for item in serializer.validated_data["notifications"]:
+            user = User.objects.filter(pk=item["user_id"]).first()
+            if not user:
+                continue
+            ref_type = (item.get("ref_type") or "").strip()
+            notification = Notification.objects.create(
+                user=user,
+                type=item["type"],
+                title=item["title"],
+                message=item["message"],
+                ref_type=ref_type,
+                ref_id=item.get("ref_id"),
+                details=item.get("details"),
+            )
+            created_ids.append(notification.id)
+        return api_response(
+            True,
+            f"{len(created_ids)} notification(s) created.",
+            status.HTTP_201_CREATED,
+            {"created_ids": created_ids},
+        )
 
 
 #notification view set pagination
