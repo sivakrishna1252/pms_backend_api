@@ -1082,36 +1082,43 @@ class TaskViewSet(viewsets.ModelViewSet):
         supervisor = serializer.validated_data.get("supervisor")
         self._validate_project_milestone_scope(project, milestone)
 
+        if not supervisor:
+            raise ValidationError(
+                {"supervisor": "Select an Admin or BA to notify about this task."}
+            )
+
         task = serializer.save(
             created_by=self.request.user,
             assigned_to=self.request.user,
             is_self_created=True,
+            supervisor=supervisor,
         )
         _sync_parent_statuses_for_task(task)
 
         employee_name = self.request.user.get_full_name().strip() or self.request.user.email
-        if supervisor:
-            Notification.objects.create(
-                user=supervisor,
-                type="TASK_SELF_CREATED",
-                title="Employee self-created task",
-                message=(
-                    f"{employee_name} created task '{task.title}'"
-                    + (f" under project '{task.project.name}'." if task.project_id else ".")
-                ),
-                ref_type=Notification.RefType.TASK,
-                ref_id=task.id,
-                details={
-                    "employee_id": self.request.user.id,
-                    "employee_name": employee_name,
-                    "project_id": task.project_id,
-                    "milestone_id": task.milestone_id,
-                    "deadline": task.deadline.isoformat() if task.deadline else None,
-                    "is_self_created": True,
-                },
-            )
-            send_task_self_created_email(task, self.request.user, supervisor)
-            self._mail_triggered = True
+        notify_user = task.supervisor or supervisor
+        Notification.objects.create(
+            user=notify_user,
+            type="TASK_SELF_CREATED",
+            title="Employee self-created task",
+            message=(
+                f"{employee_name} created task '{task.title}'"
+                + (f" under project '{task.project.name}'." if task.project_id else ".")
+            ),
+            ref_type=Notification.RefType.TASK,
+            ref_id=task.id,
+            details={
+                "employee_id": self.request.user.id,
+                "employee_name": employee_name,
+                "supervisor_id": notify_user.id,
+                "project_id": task.project_id,
+                "milestone_id": task.milestone_id,
+                "deadline": task.deadline.isoformat() if task.deadline else None,
+                "is_self_created": True,
+            },
+        )
+        send_task_self_created_email(task, self.request.user, notify_user)
+        self._mail_triggered = True
 
     def perform_create(self, serializer):
         if user_role(self.request.user) == UserProfile.Roles.EMPLOYEE:
