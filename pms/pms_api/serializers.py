@@ -544,9 +544,22 @@ class MilestoneSerializer(serializers.ModelSerializer):
 class TaskSerializer(serializers.ModelSerializer):
     created_by_name = serializers.SerializerMethodField(read_only=True)
     assigned_to_name = serializers.SerializerMethodField(read_only=True)
-    project_name = serializers.CharField(source="project.name", read_only=True)
-    milestone_name = serializers.CharField(source="milestone.name", read_only=True)
-    project_document = serializers.FileField(source="project.document", read_only=True)
+    supervisor_name = serializers.SerializerMethodField(read_only=True)
+    project_name = serializers.SerializerMethodField(read_only=True)
+    milestone_name = serializers.CharField(source="milestone.name", read_only=True, allow_null=True, default="")
+    project_document = serializers.SerializerMethodField(read_only=True)
+    project_files = serializers.SerializerMethodField(read_only=True)
+    milestone_document = serializers.FileField(source="milestone.document", read_only=True, allow_null=True)
+    supervisor = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(
+            profile__role__in=[UserProfile.Roles.ADMIN, UserProfile.Roles.BA],
+            profile__status=UserProfile.Status.ACTIVE,
+            is_superuser=False,
+            is_staff=False,
+        ),
+        required=False,
+        allow_null=True,
+    )
     project_files = serializers.SerializerMethodField(read_only=True)
     milestone_document = serializers.FileField(source="milestone.document", read_only=True)
     total_time_spent_display = serializers.SerializerMethodField(read_only=True)
@@ -569,6 +582,9 @@ class TaskSerializer(serializers.ModelSerializer):
             "description",
             "assigned_to",
             "assigned_to_name",
+            "supervisor",
+            "supervisor_name",
+            "is_self_created",
             "created_by",
             "created_by_name",
             "status",
@@ -584,7 +600,17 @@ class TaskSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_by", "total_time_spent_seconds", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_by", "is_self_created", "total_time_spent_seconds", "created_at", "updated_at"]
+
+    def get_project_name(self, obj) -> str:
+        if not obj.project_id:
+            return ""
+        return obj.project.name
+
+    def get_project_document(self, obj):
+        if not obj.project_id or not obj.project.document:
+            return None
+        return obj.project.document
 
     def get_progress_percent(self, obj) -> float:
         from .progress import task_progress_percent
@@ -632,6 +658,11 @@ class TaskSerializer(serializers.ModelSerializer):
             return ""
         return obj.assigned_to.get_full_name().strip() or obj.assigned_to.email
 
+    def get_supervisor_name(self, obj) -> str:
+        if not obj.supervisor:
+            return ""
+        return obj.supervisor.get_full_name().strip() or obj.supervisor.email
+
     def get_total_time_spent_display(self, obj) -> str:
         return humanize_duration(getattr(obj, "total_time_spent_seconds", None))
 
@@ -669,6 +700,19 @@ class TaskSerializer(serializers.ModelSerializer):
             milestone_id = instance.milestone_id if instance else None
         else:
             milestone_id = _pk(milestone_val)
+
+        request = self.context.get("request")
+        actor_role = getattr(getattr(getattr(request, "user", None), "profile", None), "role", None)
+        if actor_role == UserProfile.Roles.EMPLOYEE and instance is None:
+            supervisor = attrs.get("supervisor")
+            if not supervisor:
+                raise serializers.ValidationError(
+                    {"supervisor": "Select an Admin or BA to notify about this task."}
+                )
+            if milestone_id is not None and project_id is None:
+                raise serializers.ValidationError(
+                    {"project": "Project is required when a milestone is selected."}
+                )
 
         deadline_val = attrs.get("deadline", serializers.empty)
         if deadline_val is serializers.empty:

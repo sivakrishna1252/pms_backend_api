@@ -567,6 +567,39 @@ def send_task_deadline_change_request_email(task, employee, owner, new_deadline=
         logger.exception("Failed task deadline request email for task %s", task.id)
 
 
+def send_task_self_created_email(task, employee, supervisor):
+    if not supervisor or not supervisor.email:
+        return
+    employee_name = employee.get_full_name().strip() or employee.email
+    subject = f"Employee Self-Created Task: {task.title}"
+    greeting = f"Hi {supervisor.first_name or supervisor.username},"
+    intro_text = "An employee created their own task and selected you for review."
+    detail_rows = [
+        ("Task", task.title),
+        ("Created By", employee_name),
+        ("Project", task.project.name if task.project_id else "Not linked"),
+        ("Milestone", task.milestone.name if task.milestone_id else "Not linked"),
+        ("Expected Date", task.deadline or "Not set"),
+    ]
+    try:
+        _send_styled_email(
+            subject,
+            [supervisor.email],
+            greeting,
+            intro_text,
+            detail_rows,
+            footer_note="Please review the task when available.\n\nRegards,\nPMS Team",
+        )
+    except Exception:
+        logger.exception("Failed self-created task email for task %s", task.id)
+
+
+def _task_deadline_change_recipient(task):
+    if task.is_self_created and task.supervisor_id:
+        return task.supervisor
+    return task.created_by
+
+
 def send_project_change_request_email(project, requester, admin_emails, request_type, new_deadline=None, reason=""):
     if not admin_emails:
         return
@@ -670,6 +703,8 @@ class UserViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in {"list", "retrieve"}:
             return [IsAuthenticated(), IsAdminOrBA()]
+        if self.action == "supervisors":
+            return [IsAuthenticated()]
         return [IsAuthenticated(), IsAdmin()]
 
     def create(self, request, *args, **kwargs):
@@ -707,6 +742,29 @@ class UserViewSet(viewsets.ModelViewSet):
     def partial_update(self, request, *args, **kwargs):
         kwargs["partial"] = True
         return self.update(request, *args, **kwargs)
+
+    @extend_schema(responses={200: OpenApiTypes.OBJECT})
+    @action(detail=False, methods=["get"], url_path="supervisors")
+    def supervisors(self, request):
+        users = (
+            User.objects.filter(
+                profile__role__in=[UserProfile.Roles.ADMIN, UserProfile.Roles.BA],
+                profile__status=UserProfile.Status.ACTIVE,
+                is_superuser=False,
+                is_staff=False,
+            )
+            .select_related("profile")
+            .order_by("first_name", "last_name", "id")
+        )
+        payload = [
+            {
+                "id": user.id,
+                "name": user.get_full_name().strip() or user.email,
+                "role": user.profile.role,
+            }
+            for user in users
+        ]
+        return api_response(True, "Supervisors fetched.", status.HTTP_200_OK, {"results": payload})
 
 
 
@@ -922,7 +980,11 @@ class MilestoneViewSet(viewsets.ModelViewSet):
 #task view set pagination
 @extend_schema(tags=["BA/Employee APIs"])
 class TaskViewSet(viewsets.ModelViewSet):
-    queryset = Task.objects.select_related("project", "milestone", "assigned_to").all().order_by("-created_at")
+    queryset = (
+        Task.objects.select_related("project", "milestone", "assigned_to", "supervisor", "created_by")
+        .all()
+        .order_by("-created_at")
+    )
     serializer_class = TaskSerializer
     pagination_class = StandardResultsSetPagination
     permission_classes = [IsAuthenticated]
@@ -940,9 +1002,9 @@ class TaskViewSet(viewsets.ModelViewSet):
         return queryset
 
     def get_permissions(self):
-        if self.action == "request_deadline_change":
+        if self.action in {"create", "request_deadline_change"}:
             return [IsAuthenticated()]
-        if self.action in {"create", "update", "partial_update", "destroy", "assign", "request_deadline_change"}:
+        if self.action in {"update", "partial_update", "destroy", "assign"}:
             return [IsAuthenticated(), IsAdminOrBA()]
         return [IsAuthenticated()]
 
@@ -968,6 +1030,11 @@ class TaskViewSet(viewsets.ModelViewSet):
         actor = self.request.user
         actor_role = user_role(actor)
 
+        if not project:
+            if milestone:
+                raise ValidationError({"project": "Project is required when a milestone is selected."})
+            return
+
         # Always ensure milestone belongs to the selected project.
         if milestone and milestone.project_id != project.id:
             raise ValidationError({"milestone": "Selected milestone does not belong to the selected project."})
@@ -991,10 +1058,57 @@ class TaskViewSet(viewsets.ModelViewSet):
     def _reset_mail_state(self):
         self._mail_triggered = False
 
-    def perform_create(self, serializer):
+    def _perform_employee_self_create(self, serializer):
+        if user_role(self.request.user) != UserProfile.Roles.EMPLOYEE:
+            raise PermissionDenied("Only employees can self-create tasks.")
+
         self._reset_mail_state()
         project = serializer.validated_data.get("project")
         milestone = serializer.validated_data.get("milestone")
+        supervisor = serializer.validated_data.get("supervisor")
+        self._validate_project_milestone_scope(project, milestone)
+
+        task = serializer.save(
+            created_by=self.request.user,
+            assigned_to=self.request.user,
+            is_self_created=True,
+        )
+        _sync_parent_statuses_for_task(task)
+
+        employee_name = self.request.user.get_full_name().strip() or self.request.user.email
+        if supervisor:
+            Notification.objects.create(
+                user=supervisor,
+                type="TASK_SELF_CREATED",
+                title="Employee self-created task",
+                message=(
+                    f"{employee_name} created task '{task.title}'"
+                    + (f" under project '{task.project.name}'." if task.project_id else ".")
+                ),
+                ref_type=Notification.RefType.TASK,
+                ref_id=task.id,
+                details={
+                    "employee_id": self.request.user.id,
+                    "employee_name": employee_name,
+                    "project_id": task.project_id,
+                    "milestone_id": task.milestone_id,
+                    "deadline": task.deadline.isoformat() if task.deadline else None,
+                    "is_self_created": True,
+                },
+            )
+            send_task_self_created_email(task, self.request.user, supervisor)
+            self._mail_triggered = True
+
+    def perform_create(self, serializer):
+        if user_role(self.request.user) == UserProfile.Roles.EMPLOYEE:
+            self._perform_employee_self_create(serializer)
+            return
+
+        self._reset_mail_state()
+        project = serializer.validated_data.get("project")
+        milestone = serializer.validated_data.get("milestone")
+        if not project:
+            raise ValidationError({"project": "Project is required."})
         self._validate_project_milestone_scope(project, milestone)
         self._validate_assignee(serializer.validated_data.get("assigned_to"))
         task = serializer.save(created_by=self.request.user)
@@ -1257,7 +1371,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         new_deadline = serializer.validated_data.get("new_deadline")
         reason = serializer.validated_data.get("reason", "")
-        owner = task.created_by
+        owner = _task_deadline_change_recipient(task)
         mail_triggered = False
 
         if owner:

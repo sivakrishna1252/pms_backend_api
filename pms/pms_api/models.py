@@ -130,7 +130,9 @@ class Task(TimeStampedModel):
         DELAYED = "DELAYED", "Delayed"
         BLOCKED = "BLOCKED", "Blocked"
 
-    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="tasks")
+    project = models.ForeignKey(
+        Project, on_delete=models.CASCADE, related_name="tasks", null=True, blank=True
+    )
     milestone = models.ForeignKey(Milestone, on_delete=models.SET_NULL, null=True, blank=True, related_name="tasks")
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
@@ -144,6 +146,15 @@ class Task(TimeStampedModel):
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="tasks_created"
     )
+    supervisor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="supervised_self_tasks",
+        help_text="Admin/BA chosen by employee for self-created tasks.",
+    )
+    is_self_created = models.BooleanField(default=False)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.NOT_STARTED)
     priority = models.CharField(max_length=20, blank=True)
     deadline = models.DateField(null=True, blank=True)
