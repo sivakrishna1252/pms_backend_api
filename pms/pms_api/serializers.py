@@ -610,7 +610,7 @@ class TaskSerializer(serializers.ModelSerializer):
     def get_project_document(self, obj):
         if not obj.project_id or not obj.project.document:
             return None
-        return obj.project.document
+        return obj.project.document.url
 
     def get_progress_percent(self, obj) -> float:
         from .progress import task_progress_percent
@@ -849,7 +849,7 @@ class FileAttachmentSerializer(serializers.ModelSerializer):
             return obj.project_id
         if obj.milestone_id:
             return obj.milestone.project_id
-        if obj.task_id:
+        if obj.task_id and obj.task.project_id:
             return obj.task.project_id
         return None
 
@@ -858,7 +858,7 @@ class FileAttachmentSerializer(serializers.ModelSerializer):
             return obj.project.name
         if obj.milestone_id:
             return obj.milestone.project.name
-        if obj.task_id:
+        if obj.task_id and obj.task.project_id:
             return obj.task.project.name
         return ""
 

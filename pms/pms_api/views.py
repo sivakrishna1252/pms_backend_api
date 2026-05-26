@@ -185,6 +185,20 @@ def apply_automatic_task_status_rules():
     ).update(status=Task.Status.DELAYED)
 
 
+def _task_project_name(task) -> str:
+    if not task or not getattr(task, "project_id", None):
+        return ""
+    project = getattr(task, "project", None)
+    return project.name if project else ""
+
+
+def _task_milestone_name(task):
+    if not task or not getattr(task, "milestone_id", None):
+        return None
+    milestone = getattr(task, "milestone", None)
+    return milestone.name if milestone else None
+
+
 def _sync_parent_statuses_for_task(task: Task) -> None:
     """Keep milestone/project statuses aligned with underlying task statuses."""
     today = timezone.localdate()
@@ -416,10 +430,10 @@ def build_admin_overview_payload(project_id=None, milestone_id=None, task_id=Non
                 "id": task.id,
                 "title": task.title,
                 "project_id": task.project_id,
-                "project_name": task.project.name,
+                "project_name": _task_project_name(task),
                 "milestone_id": task.milestone_id,
                 "milestone_no": task.milestone.milestone_no if task.milestone else None,
-                "milestone_name": task.milestone.name if task.milestone else None,
+                "milestone_name": _task_milestone_name(task),
                 "status": task.status,
                 "deadline": task.deadline,
                 "created_by_id": task.created_by_id,
@@ -1687,10 +1701,10 @@ class DashboardAPIView(APIView):
             )
             allowed_creator_ids.extend(admin_ids)
 
-            # BA dashboard should include BA-created + Admin-created scope.
-            ba_tasks_qs = Task.objects.filter(created_by_id__in=allowed_creator_ids).select_related(
-                "project", "milestone", "assigned_to"
-            )
+            # BA dashboard: tasks they created + employee self-created tasks they supervise.
+            ba_tasks_qs = Task.objects.filter(
+                Q(created_by_id__in=allowed_creator_ids) | Q(supervisor=user)
+            ).select_related("project", "milestone", "assigned_to", "supervisor")
             employee_ids = list(ba_tasks_qs.exclude(assigned_to_id__isnull=True).values_list("assigned_to_id", flat=True).distinct())
             employee_rows = list(
                 User.objects.filter(id__in=employee_ids, profile__role=UserProfile.Roles.EMPLOYEE)
@@ -1745,7 +1759,7 @@ class DashboardAPIView(APIView):
                                 "title": task.title,
                                 "status": task.status,
                                 "project_id": task.project_id,
-                                "project_name": task.project.name,
+                                "project_name": _task_project_name(task),
                                 "milestone_id": task.milestone_id,
                                 "milestone_no": task.milestone.milestone_no if task.milestone else None,
                                 "milestone_name": task.milestone.name if task.milestone else None,
@@ -1786,7 +1800,7 @@ class DashboardAPIView(APIView):
                         "employee_name": user_name,
                         "task_id": log.task_id,
                         "task_title": log.task.title,
-                        "project_name": log.task.project.name,
+                        "project_name": _task_project_name(log.task),
                         "timestamp": log.start_time,
                     }
                 )
@@ -1798,7 +1812,7 @@ class DashboardAPIView(APIView):
                             "employee_name": user_name,
                             "task_id": log.task_id,
                             "task_title": log.task.title,
-                            "project_name": log.task.project.name,
+                            "project_name": _task_project_name(log.task),
                             "timestamp": log.end_time,
                         }
                     )
@@ -1842,7 +1856,7 @@ class DashboardAPIView(APIView):
                         "id": task.id,
                         "title": task.title,
                         "project_id": task.project_id,
-                        "project_name": task.project.name,
+                        "project_name": _task_project_name(task),
                         "milestone_name": task.milestone.name if task.milestone else None,
                         "status": task.status,
                     }
@@ -1894,7 +1908,9 @@ class WorkTrackingAPIView(APIView):
                 ).values_list("id", flat=True)
             )
             allowed_creator_ids.extend(admin_ids)
-            tasks_qs = tasks_qs.filter(created_by_id__in=allowed_creator_ids)
+            tasks_qs = tasks_qs.filter(
+                Q(created_by_id__in=allowed_creator_ids) | Q(supervisor=request.user)
+            )
 
         employee_id = request.query_params.get("employee_id")
         project_id = request.query_params.get("project_id")
@@ -1967,7 +1983,7 @@ class WorkTrackingAPIView(APIView):
                     "employee_name": task.assigned_to.get_full_name().strip() or task.assigned_to.email,
                     "employee_email": task.assigned_to.email,
                     "project_id": task.project_id,
-                    "project_name": task.project.name,
+                    "project_name": _task_project_name(task),
                     "milestone_id": task.milestone_id,
                     "milestone_no": task.milestone.milestone_no if task.milestone else None,
                     "milestone_name": task.milestone.name if task.milestone else None,
@@ -2044,7 +2060,7 @@ class WorkTrackingAPIView(APIView):
                     "employee_name": user_name,
                     "task_id": log.task_id,
                     "task_title": log.task.title,
-                    "project_name": log.task.project.name,
+                            "project_name": _task_project_name(log.task),
                     "timestamp": log.start_time,
                 }
             )
@@ -2059,7 +2075,7 @@ class WorkTrackingAPIView(APIView):
                         "employee_name": user_name,
                         "task_id": log.task_id,
                         "task_title": log.task.title,
-                        "project_name": log.task.project.name,
+                        "project_name": _task_project_name(log.task),
                         "timestamp": log.end_time,
                     }
                 )
@@ -2086,7 +2102,7 @@ class WorkTrackingAPIView(APIView):
                     "employee_name": employee_name,
                     "task_id": task.id,
                     "task_title": task.title,
-                    "project_name": task.project.name,
+                    "project_name": _task_project_name(task),
                     "timestamp": task.updated_at,
                 }
             )
