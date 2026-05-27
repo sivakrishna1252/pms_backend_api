@@ -2381,7 +2381,13 @@ class MyTasksAPIView(APIView):
     @extend_schema(responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
         tasks = apply_work_history_retention(
-            Task.objects.select_related("project", "milestone", "created_by", "assigned_to")
+            Task.objects.select_related(
+                "project",
+                "milestone",
+                "milestone__project",
+                "created_by",
+                "assigned_to",
+            )
             .prefetch_related("project__files")
             .filter(assigned_to=request.user)
         ).order_by("-created_at")

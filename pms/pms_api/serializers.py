@@ -546,6 +546,7 @@ class TaskSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.SerializerMethodField(read_only=True)
     supervisor_name = serializers.SerializerMethodField(read_only=True)
     project_name = serializers.SerializerMethodField(read_only=True)
+    resolved_project_id = serializers.SerializerMethodField(read_only=True)
     milestone_name = serializers.CharField(source="milestone.name", read_only=True, allow_null=True, default="")
     project_document = serializers.SerializerMethodField(read_only=True)
     project_files = serializers.SerializerMethodField(read_only=True)
@@ -573,6 +574,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "id",
             "project",
             "project_name",
+            "resolved_project_id",
             "project_document",
             "project_files",
             "milestone",
@@ -603,9 +605,18 @@ class TaskSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_by", "is_self_created", "total_time_spent_seconds", "created_at", "updated_at"]
 
     def get_project_name(self, obj) -> str:
-        if not obj.project_id:
-            return ""
-        return obj.project.name
+        if obj.project_id:
+            return obj.project.name
+        if obj.milestone_id and obj.milestone.project_id:
+            return obj.milestone.project.name
+        return ""
+
+    def get_resolved_project_id(self, obj) -> int | None:
+        if obj.project_id:
+            return obj.project_id
+        if obj.milestone_id and obj.milestone.project_id:
+            return obj.milestone.project_id
+        return None
 
     def get_project_document(self, obj):
         if not obj.project_id or not obj.project.document:
