@@ -202,6 +202,7 @@ EMAIL_HOST_PASSWORD = os.getenv("SMTP_PASS", "")
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
 # Shared secret for attendance service → in-app notifications (Bearer token).
+
 PMS_SERVICE_TOKEN = os.getenv("PMS_SERVICE_TOKEN", "").strip()
 
 # Auto-stop active timers (server local timezone via Django timezone.localtime()).
