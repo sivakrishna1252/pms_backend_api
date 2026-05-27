@@ -23,7 +23,12 @@ from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 
 from .ai_readonly_context import build_readonly_context_text
 from .models import FileAttachment, Milestone, Notification, Project, Task, TimeLog, UserProfile, humanize_duration
-from .timer_state import assignee_timer_state
+from .timer_state import assignee_timer_state, stop_open_timers_for_task
+from .work_history_retention import (
+    WORK_HISTORY_RETENTION_MONTHS,
+    apply_work_history_retention,
+    visible_completed_tasks_for_user,
+)
 from .ollama_client import OllamaClientError, ollama_chat
 from .progress import milestone_progress_data, project_progress_data
 from .pagination import StandardResultsSetPagination
@@ -56,6 +61,13 @@ from .serializers import (
 User = get_user_model()
 logger = logging.getLogger(__name__)
 ADMIN_RESET_OTP_TTL_SECONDS = 600
+
+
+def _stop_timers_before_complete(task, actor):
+    if user_role(actor) == UserProfile.Roles.EMPLOYEE:
+        stop_open_timers_for_task(task, user=actor)
+    else:
+        stop_open_timers_for_task(task)
 
 
 def _render_email_html(subject, greeting, intro_text, detail_rows, footer_note="Regards,<br>PMS Team"):
@@ -197,6 +209,53 @@ def _task_milestone_name(task):
         return None
     milestone = getattr(task, "milestone", None)
     return milestone.name if milestone else None
+
+
+def _recent_activity_window_start():
+    now_local = timezone.localtime()
+    day_start = datetime.combine(now_local.date(), time.min, tzinfo=now_local.tzinfo)
+    reset_time = datetime.combine(now_local.date(), time(hour=22), tzinfo=now_local.tzinfo)
+    return reset_time if now_local >= reset_time else day_start
+
+
+def _build_notification_recent_activity(user, window_start=None):
+    """Include in-app alerts (e.g. employee self-created tasks) on dashboard feeds."""
+    if user is None or not getattr(user, "is_authenticated", True):
+        return []
+    qs = Notification.objects.filter(user=user, type="TASK_SELF_CREATED")
+    if window_start is not None:
+        qs = qs.filter(created_at__gte=window_start)
+    notifications = list(qs.order_by("-created_at")[:40])
+    task_ids = [n.ref_id for n in notifications if n.ref_id]
+    tasks_by_id = {
+        t.id: t
+        for t in Task.objects.select_related("project").filter(id__in=task_ids)
+    }
+    events = []
+    for notification in notifications:
+        details = notification.details or {}
+        employee_name = details.get("employee_name") or "Employee"
+        task = tasks_by_id.get(notification.ref_id) if notification.ref_id else None
+        project_name = _task_project_name(task) if task else ""
+        events.append(
+            {
+                "action": "SELF_CREATED",
+                "employee_name": employee_name,
+                "task_id": notification.ref_id or 0,
+                "task_title": task.title if task else notification.title,
+                "project_name": project_name or "No project",
+                "timestamp": notification.created_at,
+            }
+        )
+    return events
+
+
+def _merge_recent_activity_events(*event_lists, limit=20):
+    events = []
+    for event_list in event_lists:
+        events.extend(event_list or [])
+    events.sort(key=lambda item: item["timestamp"], reverse=True)
+    return events[:limit]
 
 
 def _sync_parent_statuses_for_task(task: Task) -> None:
@@ -1166,11 +1225,8 @@ class TaskViewSet(viewsets.ModelViewSet):
         assignee = serializer.validated_data.get("assigned_to", serializer.instance.assigned_to)
         self._validate_assignee(assignee)
         requested_status = serializer.validated_data.get("status", serializer.instance.status)
-        if (
-            requested_status == Task.Status.COMPLETED
-            and TimeLog.objects.filter(task=serializer.instance, end_time__isnull=True).exists()
-        ):
-            raise ValidationError({"status": "Stop the active timer first, then mark task as completed."})
+        if requested_status == Task.Status.COMPLETED:
+            _stop_timers_before_complete(serializer.instance, self.request.user)
         task = serializer.save()
         _sync_parent_statuses_for_task(task)
         if assignee and assignee.email and assignee.id != previous_assignee_id:
@@ -1341,15 +1397,8 @@ class TaskViewSet(viewsets.ModelViewSet):
         status_value = request.data.get("status")
         if status_value not in Task.Status.values:
             return api_response(False, "Invalid status.", status.HTTP_400_BAD_REQUEST)
-        if (
-            status_value == Task.Status.COMPLETED
-            and TimeLog.objects.filter(task=task, end_time__isnull=True).exists()
-        ):
-            return api_response(
-                False,
-                "First stop the task, then mark it as completed.",
-                status.HTTP_400_BAD_REQUEST,
-            )
+        if status_value == Task.Status.COMPLETED:
+            _stop_timers_before_complete(task, request.user)
         task.status = status_value
         task.save(update_fields=["status"])
         _sync_parent_statuses_for_task(task)
@@ -1685,6 +1734,15 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         notification.save(update_fields=["is_read"])
         return api_response(True, "Notification marked as read.", status.HTTP_200_OK, {"id": notification.id})
 
+    @action(detail=False, methods=["post"], url_path="clear")
+    def clear(self, request):
+        deleted_count, _ = self.get_queryset().delete()
+        return api_response(
+            True,
+            "Notifications cleared successfully.",
+            status.HTTP_200_OK,
+            {"deleted_count": deleted_count},
+        )
 
 
 #dashboard api view
@@ -1824,6 +1882,13 @@ class DashboardAPIView(APIView):
                         }
                     )
             recent_activity.sort(key=lambda item: item["timestamp"], reverse=True)
+            window_start = _recent_activity_window_start()
+            notification_events = _build_notification_recent_activity(user, window_start)
+            recent_activity = _merge_recent_activity_events(
+                recent_activity,
+                notification_events,
+                limit=20,
+            )
             data = {
                 "tasks_created": ba_tasks_qs.count(),
                 "tasks_completed": ba_tasks_qs.filter(status=Task.Status.COMPLETED).count(),
@@ -1869,13 +1934,14 @@ class DashboardAPIView(APIView):
                     }
                     for task in ba_tasks_qs.order_by("-updated_at")
                 ],
-                "recent_activity": recent_activity[:20],
+                "recent_activity": recent_activity,
                 "employee_summary": employee_summary,
             }
             return api_response(True, "BA dashboard fetched.", status.HTTP_200_OK, data)
         data = {
             "active_task": Task.objects.filter(assigned_to=user, status=Task.Status.IN_PROGRESS).values("id", "title").first(),
-            "completed_tasks": Task.objects.filter(assigned_to=user, status=Task.Status.COMPLETED).count(),
+            "completed_tasks": visible_completed_tasks_for_user(user).count(),
+            "work_history_retention_months": WORK_HISTORY_RETENTION_MONTHS,
         }
         return api_response(True, "Employee dashboard fetched.", status.HTTP_200_OK, data)
 
@@ -2040,12 +2106,12 @@ class WorkTrackingAPIView(APIView):
 
     def _build_recent_activity(self, tasks_qs, role, actor):
         task_ids = list(tasks_qs.values_list("id", flat=True))
+        window_start = _recent_activity_window_start()
+
         if not task_ids:
+            if role in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
+                return _build_notification_recent_activity(actor, window_start)[:20]
             return []
-        now_local = timezone.localtime()
-        day_start = datetime.combine(now_local.date(), time.min, tzinfo=now_local.tzinfo)
-        reset_time = datetime.combine(now_local.date(), time(hour=22), tzinfo=now_local.tzinfo)
-        window_start = reset_time if now_local >= reset_time else day_start
 
         logs_qs = (
             TimeLog.objects.select_related("task", "task__project", "user")
@@ -2054,7 +2120,7 @@ class WorkTrackingAPIView(APIView):
             .order_by("-start_time")
         )
         if role == UserProfile.Roles.BA:
-            logs_qs = logs_qs.filter(task__created_by=actor)
+            logs_qs = logs_qs.filter(Q(task__created_by=actor) | Q(task__supervisor=actor))
         elif role == UserProfile.Roles.EMPLOYEE:
             logs_qs = logs_qs.filter(user=actor)
 
@@ -2093,7 +2159,7 @@ class WorkTrackingAPIView(APIView):
             updated_at__gte=window_start,
         )
         if role == UserProfile.Roles.BA:
-            completed_qs = completed_qs.filter(created_by=actor)
+            completed_qs = completed_qs.filter(Q(created_by=actor) | Q(supervisor=actor))
         elif role == UserProfile.Roles.EMPLOYEE:
             completed_qs = completed_qs.filter(assigned_to=actor)
         for task in completed_qs[:40]:
@@ -2114,8 +2180,11 @@ class WorkTrackingAPIView(APIView):
                 }
             )
 
-        events.sort(key=lambda item: item["timestamp"], reverse=True)
-        return events[:20]
+        notification_events = []
+        if role in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
+            notification_events = _build_notification_recent_activity(actor, window_start)
+
+        return _merge_recent_activity_events(events, notification_events, limit=20)
 
 
 @extend_schema(tags=["Admin APIs"])
@@ -2311,11 +2380,10 @@ class MyTasksAPIView(APIView):
 
     @extend_schema(responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
-        tasks = (
+        tasks = apply_work_history_retention(
             Task.objects.select_related("project", "milestone", "created_by", "assigned_to")
             .prefetch_related("project__files")
             .filter(assigned_to=request.user)
-            .order_by("-created_at")
-        )
+        ).order_by("-created_at")
         serializer = TaskSerializer(tasks, many=True, context={"request": request})
         return api_response(True, "My tasks fetched.", status.HTTP_200_OK, serializer.data)

@@ -36,3 +36,15 @@ def assignee_timer_state(task: Task) -> str | None:
     if last.source == TimeLog.Source.AUTO_STOP_8PM:
         return "AUTO_STOPPED"
     return "STOPPED"
+
+
+def stop_open_timers_for_task(task: Task, *, user=None) -> int:
+    """Close open TimeLog sessions (e.g. before marking a task completed)."""
+    logs_qs = TimeLog.objects.filter(task=task, end_time__isnull=True)
+    if user is not None:
+        logs_qs = logs_qs.filter(user=user)
+    stopped = 0
+    for log in logs_qs:
+        log.stop(source=TimeLog.Source.MANUAL_STOP)
+        stopped += 1
+    return stopped
