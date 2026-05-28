@@ -800,13 +800,19 @@ class LoginAPIView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
         profile, _ = UserProfile.objects.get_or_create(user=user)
-        if not profile.password_set:
+        # Manually managed admin accounts (Django admin/superuser/staff) should
+        # not be blocked by first-login onboarding flow.
+        is_manual_admin_account = bool(user.is_superuser or user.is_staff)
+        if not profile.password_set and not is_manual_admin_account:
             return api_response(
                 False,
                 "First-time login requires OTP verification and password setup.",
                 status.HTTP_403_FORBIDDEN,
                 {"first_login_required": True, "email": user.email},
             )
+        if is_manual_admin_account and not profile.password_set:
+            profile.password_set = True
+            profile.save(update_fields=["password_set"])
         payload = AuthResponseSerializer.build(user)
         return api_response(True, "Login successful.", status.HTTP_200_OK, payload)
 
