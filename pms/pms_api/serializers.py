@@ -1046,7 +1046,6 @@ class FirstLoginVerifyOTPSerializer(serializers.Serializer):
 
 
 class FirstLoginSetPasswordSerializer(serializers.Serializer):
-    email = serializers.EmailField()
     token = serializers.CharField(min_length=20)
     new_password = serializers.CharField(min_length=6, write_only=True)
     confirm_password = serializers.CharField(min_length=6, write_only=True)
@@ -1058,7 +1057,10 @@ class FirstLoginSetPasswordSerializer(serializers.Serializer):
 
 
 class FirstLoginTokenVerifySerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    token = serializers.CharField(min_length=20)
+
+
+class FirstLoginResendLinkSerializer(serializers.Serializer):
     token = serializers.CharField(min_length=20)
 
 
