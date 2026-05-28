@@ -623,8 +623,8 @@ def send_user_first_login_email(user):
     greeting = f"Hi {user.first_name or user.username},"
     first_login_url = getattr(
         settings,
-        "FRONTEND_LOGIN_URL",
-        "http://nexus.aspune.cloud/auth/login",
+        "FRONTEND_FIRST_LOGIN_URL",
+        "http://nexus.aspune.cloud/auth/first-login",
     )
     parsed = urlsplit(first_login_url)
     existing_query = dict(parse_qsl(parsed.query, keep_blank_values=True))
@@ -636,7 +636,7 @@ def send_user_first_login_email(user):
     intro_text = "Your Project Management System account has been created. Complete your first login using OTP."
     detail_rows = [
         ("Login Email", user.email),
-        ("Login URL", first_login_url),
+        ("First Login URL", first_login_url),
     ]
     try:
         _send_styled_email(
@@ -2563,28 +2563,29 @@ class AdminForgotPasswordRequestOTPAPIView(APIView):
         serializer.is_valid(raise_exception=True)
 
         email = serializer.validated_data["email"].lower().strip()
-        matched_user = User.objects.filter(email__iexact=email).first()
-        if not matched_user:
-            return api_response(False, "User with this email was not found.", status.HTTP_404_NOT_FOUND)
-
-        role = getattr(getattr(matched_user, "profile", None), "role", None)
-        if role != UserProfile.Roles.ADMIN:
-            return api_response(False, "Forgot password is allowed only for admin users.", status.HTTP_403_FORBIDDEN)
-
-        admin_user = User.objects.filter(
-            id=matched_user.id,
+        target_user = User.objects.filter(
+            email__iexact=email,
             profile__status=UserProfile.Status.ACTIVE,
         ).first()
-        if not admin_user:
-            return api_response(False, "Admin account is inactive.", status.HTTP_403_FORBIDDEN)
+        if not target_user:
+            return api_response(False, "User with this email was not found.", status.HTTP_404_NOT_FOUND)
+
+        profile, _ = UserProfile.objects.get_or_create(user=target_user)
+        if not profile.password_set:
+            return api_response(
+                False,
+                "First-time login users must complete OTP first-login setup.",
+                status.HTTP_400_BAD_REQUEST,
+                {"first_login_required": True, "email": email},
+            )
 
         otp = f"{secrets.randbelow(10**6):06d}"
         cache.set(admin_otp_cache_key(email), otp, timeout=ADMIN_RESET_OTP_TTL_SECONDS)
-        send_admin_reset_otp_email(admin_user, otp)
+        send_admin_reset_otp_email(target_user, otp)
 
         return api_response(
             True,
-            "Admin OTP sent successfully. Mail sent successfully.",
+            "OTP sent successfully. Mail sent successfully.",
             status.HTTP_200_OK,
             {"email": email, "mail_triggered": True},
         )
@@ -2603,26 +2604,30 @@ class AdminForgotPasswordVerifyOTPAPIView(APIView):
         otp = serializer.validated_data["otp"]
         new_password = serializer.validated_data["new_password"]
 
-        admin_user = User.objects.filter(
+        target_user = User.objects.filter(
             email__iexact=email,
-            profile__role=UserProfile.Roles.ADMIN,
             profile__status=UserProfile.Status.ACTIVE,
         ).first()
-        if not admin_user:
+        if not target_user:
             return api_response(False, "Invalid email or OTP.", status.HTTP_400_BAD_REQUEST)
+
+        profile, _ = UserProfile.objects.get_or_create(user=target_user)
+        if not profile.password_set:
+            return api_response(
+                False,
+                "First-time login users must complete OTP first-login setup.",
+                status.HTTP_400_BAD_REQUEST,
+                {"first_login_required": True, "email": email},
+            )
 
         cached_otp = cache.get(admin_otp_cache_key(email))
         if not cached_otp or cached_otp != otp:
             return api_response(False, "Invalid or expired OTP.", status.HTTP_400_BAD_REQUEST)
 
-        admin_user.set_password(new_password)
-        admin_user.save(update_fields=["password"])
-        profile, _ = UserProfile.objects.get_or_create(user=admin_user)
-        if not profile.password_set:
-            profile.password_set = True
-            profile.save(update_fields=["password_set"])
+        target_user.set_password(new_password)
+        target_user.save(update_fields=["password"])
         cache.delete(admin_otp_cache_key(email))
-        return api_response(True, "Admin password reset successful.", status.HTTP_200_OK, {"email": admin_user.email})
+        return api_response(True, "Password reset successful.", status.HTTP_200_OK, {"email": target_user.email})
 
 
 #my tasks api view

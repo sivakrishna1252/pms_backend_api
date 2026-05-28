@@ -187,6 +187,10 @@ SIMPLE_JWT = {
 # Allowed office email domain for login and user creation
 ALLOWED_OFFICE_EMAIL_DOMAIN = os.getenv("ALLOWED_OFFICE_EMAIL_DOMAIN", "@apparatus.solutions")
 FRONTEND_LOGIN_URL = os.getenv("FRONTEND_LOGIN_URL", "http://nexus.aspune.cloud/auth/login")
+FRONTEND_FIRST_LOGIN_URL = os.getenv(
+    "FRONTEND_FIRST_LOGIN_URL",
+    "http://nexus.aspune.cloud/auth/first-login",
+)
 
 # Local Ollama (admin AI assistant) — use /api/chat; model must exist in `ollama list`
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
