@@ -1,13 +1,12 @@
 from django.contrib.auth import get_user_model
 from django.conf import settings
-from django.core.cache import cache
 from django.core.mail import send_mail
 from django.db.models.deletion import ProtectedError
 from django.db.models import Case, Count, DecimalField, F, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from html import escape
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import logging
 import secrets
@@ -539,20 +538,12 @@ def send_task_assignment_email(employee, task):
     except Exception:
         logger.exception("Failed to send task assignment email to %s for task %s", employee.email, task.id)
 
-def admin_otp_cache_key(email):
-    return f"admin_reset_otp:{email.lower().strip()}"
-
-
-def first_login_otp_cache_key(email):
-    return f"first_login_otp:{email.lower().strip()}"
-
-
 def send_admin_reset_otp_email(user, otp):
     if not user.email:
         return
-    subject = "PMS Admin Password Reset OTP"
+    subject = "PMS Password Reset OTP"
     greeting = f"Hi {user.first_name or user.username},"
-    intro_text = "Use the OTP below to reset your admin account password."
+    intro_text = "Use the OTP below to reset your account password."
     detail_rows = [
         ("OTP", otp),
         ("Valid For", f"{ADMIN_RESET_OTP_TTL_SECONDS // 60} minutes"),
@@ -2457,7 +2448,9 @@ class FirstLoginRequestOTPAPIView(APIView):
             )
 
         otp = f"{secrets.randbelow(10**6):06d}"
-        cache.set(first_login_otp_cache_key(email), otp, timeout=FIRST_LOGIN_OTP_TTL_SECONDS)
+        profile.first_login_otp = otp
+        profile.first_login_otp_expires_at = timezone.now() + timedelta(seconds=FIRST_LOGIN_OTP_TTL_SECONDS)
+        profile.save(update_fields=["first_login_otp", "first_login_otp_expires_at"])
         send_first_login_otp_email(target_user, otp)
 
         return api_response(
@@ -2479,8 +2472,26 @@ class FirstLoginVerifyOTPAPIView(APIView):
 
         email = serializer.validated_data["email"].lower().strip()
         otp = serializer.validated_data["otp"]
-        cached_otp = cache.get(first_login_otp_cache_key(email))
-        if not cached_otp or cached_otp != otp:
+        target_user = User.objects.filter(
+            email__iexact=email,
+            profile__status=UserProfile.Status.ACTIVE,
+        ).first()
+        if not target_user:
+            return api_response(False, "User with this email was not found.", status.HTTP_404_NOT_FOUND)
+
+        profile, _ = UserProfile.objects.get_or_create(user=target_user)
+        if profile.password_set:
+            return api_response(
+                False,
+                "Password is already set. Please use regular login.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        if (
+            not profile.first_login_otp
+            or profile.first_login_otp != otp
+            or not profile.first_login_otp_expires_at
+            or timezone.now() > profile.first_login_otp_expires_at
+        ):
             return api_response(False, "Invalid or expired OTP.", status.HTTP_400_BAD_REQUEST)
 
         return api_response(
@@ -2515,15 +2526,20 @@ class FirstLoginSetPasswordAPIView(APIView):
         if profile.password_set:
             return api_response(False, "Password is already set. Please use regular login.", status.HTTP_400_BAD_REQUEST)
 
-        cached_otp = cache.get(first_login_otp_cache_key(email))
-        if not cached_otp or cached_otp != otp:
+        if (
+            not profile.first_login_otp
+            or profile.first_login_otp != otp
+            or not profile.first_login_otp_expires_at
+            or timezone.now() > profile.first_login_otp_expires_at
+        ):
             return api_response(False, "Invalid or expired OTP.", status.HTTP_400_BAD_REQUEST)
 
         target_user.set_password(new_password)
         target_user.save(update_fields=["password"])
         profile.password_set = True
-        profile.save(update_fields=["password_set"])
-        cache.delete(first_login_otp_cache_key(email))
+        profile.first_login_otp = ""
+        profile.first_login_otp_expires_at = None
+        profile.save(update_fields=["password_set", "first_login_otp", "first_login_otp_expires_at"])
 
         return api_response(True, "Password set successfully.", status.HTTP_200_OK, {"email": target_user.email})
 
@@ -2547,9 +2563,10 @@ class AdminPasswordResetAPIView(APIView):
         target_user.set_password(new_password)
         target_user.save(update_fields=["password"])
         profile, _ = UserProfile.objects.get_or_create(user=target_user)
-        if not profile.password_set:
-            profile.password_set = True
-            profile.save(update_fields=["password_set"])
+        profile.password_set = True
+        profile.password_reset_otp = ""
+        profile.password_reset_otp_expires_at = None
+        profile.save(update_fields=["password_set", "password_reset_otp", "password_reset_otp_expires_at"])
         return api_response(True, "Password updated successfully.", status.HTTP_200_OK, {"email": target_user.email})
 
 
@@ -2580,7 +2597,9 @@ class AdminForgotPasswordRequestOTPAPIView(APIView):
             )
 
         otp = f"{secrets.randbelow(10**6):06d}"
-        cache.set(admin_otp_cache_key(email), otp, timeout=ADMIN_RESET_OTP_TTL_SECONDS)
+        profile.password_reset_otp = otp
+        profile.password_reset_otp_expires_at = timezone.now() + timedelta(seconds=ADMIN_RESET_OTP_TTL_SECONDS)
+        profile.save(update_fields=["password_reset_otp", "password_reset_otp_expires_at"])
         send_admin_reset_otp_email(target_user, otp)
 
         return api_response(
@@ -2620,13 +2639,19 @@ class AdminForgotPasswordVerifyOTPAPIView(APIView):
                 {"first_login_required": True, "email": email},
             )
 
-        cached_otp = cache.get(admin_otp_cache_key(email))
-        if not cached_otp or cached_otp != otp:
+        if (
+            not profile.password_reset_otp
+            or profile.password_reset_otp != otp
+            or not profile.password_reset_otp_expires_at
+            or timezone.now() > profile.password_reset_otp_expires_at
+        ):
             return api_response(False, "Invalid or expired OTP.", status.HTTP_400_BAD_REQUEST)
 
         target_user.set_password(new_password)
         target_user.save(update_fields=["password"])
-        cache.delete(admin_otp_cache_key(email))
+        profile.password_reset_otp = ""
+        profile.password_reset_otp_expires_at = None
+        profile.save(update_fields=["password_reset_otp", "password_reset_otp_expires_at"])
         return api_response(True, "Password reset successful.", status.HTTP_200_OK, {"email": target_user.email})
 
 

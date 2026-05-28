@@ -49,6 +49,10 @@ class UserProfile(TimeStampedModel):
     tech_stack = models.CharField(max_length=100, blank=True)
     tech_notes = models.TextField(blank=True, default="")
     password_set = models.BooleanField(default=False)
+    first_login_otp = models.CharField(max_length=6, blank=True, default="")
+    first_login_otp_expires_at = models.DateTimeField(null=True, blank=True)
+    password_reset_otp = models.CharField(max_length=6, blank=True, default="")
+    password_reset_otp_expires_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.user.email} ({self.role})"
