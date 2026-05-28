@@ -610,7 +610,7 @@ def send_user_welcome_email(user, raw_password):
 def send_user_first_login_email(user):
     if not user.email:
         return
-    subject = "Your PMS account is created"
+    subject = "Welcome to Apparatus Solutions PMS account"
     greeting = f"Hi {user.first_name or user.username},"
     first_login_url = getattr(
         settings,
@@ -624,7 +624,7 @@ def send_user_first_login_email(user):
     first_login_url = urlunsplit(
         (parsed.scheme, parsed.netloc, parsed.path, urlencode(existing_query), parsed.fragment)
     )
-    intro_text = "Your Project Management System account has been created. Complete your first login using OTP."
+    intro_text = "Welcome to Apparatus Solutions PMS account. Your account has been created successfully. Complete your first login using OTP."
     detail_rows = [
         ("Login Email", user.email),
         ("First Login URL", first_login_url),
