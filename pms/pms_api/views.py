@@ -42,6 +42,7 @@ from .serializers import (
     AdminForgotPasswordRequestSerializer,
     AdminForgotPasswordVerifySerializer,
     FirstLoginRequestOTPSerializer,
+    FirstLoginResendLinkSerializer,
     FirstLoginSetPasswordSerializer,
     FirstLoginTokenVerifySerializer,
     AdminPasswordResetSerializer,
@@ -617,7 +618,7 @@ def send_user_first_login_email(user):
     first_login_url = getattr(
         settings,
         "FRONTEND_FIRST_LOGIN_URL",
-        "http://nexus.aspune.cloud/auth/first-login",
+        "http://nexus.aspune.cloud/auth/activate-account",
     )
     parsed = urlsplit(first_login_url)
     existing_query = dict(parse_qsl(parsed.query, keep_blank_values=True))
@@ -627,7 +628,6 @@ def send_user_first_login_email(user):
     profile.first_login_token_hash = token_hash
     profile.first_login_token_expires_at = timezone.now() + timedelta(seconds=FIRST_LOGIN_TOKEN_TTL_SECONDS)
     profile.save(update_fields=["first_login_token_hash", "first_login_token_expires_at"])
-    existing_query["email"] = user.email
     existing_query["token"] = token
     first_login_url = urlunsplit(
         (parsed.scheme, parsed.netloc, parsed.path, urlencode(existing_query), parsed.fragment)
@@ -649,7 +649,7 @@ def send_user_first_login_email(user):
             intro_text,
             detail_rows,
             footer_note=(
-                "This link expires in 24 hours. If expired, request a new link from the first-login page."
+                "This link expires in 24 hours. If expired, request a new activation link from the activation page."
                 "\n\nRegards,\nPMS Team"
             ),
         )
@@ -2491,14 +2491,14 @@ class FirstLoginVerifyOTPAPIView(APIView):
         serializer = FirstLoginTokenVerifySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        email = serializer.validated_data["email"].lower().strip()
         token = serializer.validated_data["token"]
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
         target_user = User.objects.filter(
-            email__iexact=email,
+            profile__first_login_token_hash=token_hash,
             profile__status=UserProfile.Status.ACTIVE,
         ).first()
         if not target_user:
-            return api_response(False, "User with this email was not found.", status.HTTP_404_NOT_FOUND)
+            return api_response(False, "Invalid first-login token.", status.HTTP_400_BAD_REQUEST)
 
         profile, _ = UserProfile.objects.get_or_create(user=target_user)
         if profile.password_set:
@@ -2507,7 +2507,6 @@ class FirstLoginVerifyOTPAPIView(APIView):
                 "Password is already set. Please use regular login.",
                 status.HTTP_400_BAD_REQUEST,
             )
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
         if not profile.first_login_token_hash or token_hash != profile.first_login_token_hash:
             return api_response(False, "Invalid first-login token.", status.HTTP_400_BAD_REQUEST)
         if not profile.first_login_token_expires_at or timezone.now() > profile.first_login_token_expires_at:
@@ -2515,14 +2514,14 @@ class FirstLoginVerifyOTPAPIView(APIView):
                 False,
                 "First-login token expired. Please request a new link.",
                 status.HTTP_400_BAD_REQUEST,
-                {"token_expired": True, "can_resend": True, "email": email},
+                {"token_expired": True, "can_resend": True},
             )
 
         return api_response(
             True,
             "Token verified successfully. Please set your password.",
             status.HTTP_200_OK,
-            {"email": email, "token_verified": True},
+            {"token_verified": True},
         )
 
 
@@ -2535,22 +2534,21 @@ class FirstLoginSetPasswordAPIView(APIView):
         serializer = FirstLoginSetPasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        email = serializer.validated_data["email"].lower().strip()
         token = serializer.validated_data["token"]
         new_password = serializer.validated_data["new_password"]
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
 
         target_user = User.objects.filter(
-            email__iexact=email,
+            profile__first_login_token_hash=token_hash,
             profile__status=UserProfile.Status.ACTIVE,
         ).first()
         if not target_user:
-            return api_response(False, "User with this email was not found.", status.HTTP_404_NOT_FOUND)
+            return api_response(False, "Invalid first-login token.", status.HTTP_400_BAD_REQUEST)
 
         profile, _ = UserProfile.objects.get_or_create(user=target_user)
         if profile.password_set:
             return api_response(False, "Password is already set. Please use regular login.", status.HTTP_400_BAD_REQUEST)
 
-        token_hash = hashlib.sha256(token.encode()).hexdigest()
         if not profile.first_login_token_hash or token_hash != profile.first_login_token_hash:
             return api_response(False, "Invalid first-login token.", status.HTTP_400_BAD_REQUEST)
         if not profile.first_login_token_expires_at or timezone.now() > profile.first_login_token_expires_at:
@@ -2558,7 +2556,7 @@ class FirstLoginSetPasswordAPIView(APIView):
                 False,
                 "First-login token expired. Please request a new link.",
                 status.HTTP_400_BAD_REQUEST,
-                {"token_expired": True, "can_resend": True, "email": email},
+                {"token_expired": True, "can_resend": True},
             )
 
         target_user.set_password(new_password)
@@ -2590,18 +2588,18 @@ class FirstLoginSetPasswordAPIView(APIView):
 class FirstLoginResendLinkAPIView(APIView):
     permission_classes = [AllowAny]
 
-    @extend_schema(request=FirstLoginRequestOTPSerializer, responses={200: OpenApiTypes.OBJECT})
+    @extend_schema(request=FirstLoginResendLinkSerializer, responses={200: OpenApiTypes.OBJECT})
     def post(self, request):
-        serializer = FirstLoginRequestOTPSerializer(data=request.data)
+        serializer = FirstLoginResendLinkSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        email = serializer.validated_data["email"].lower().strip()
+        token_hash = hashlib.sha256(serializer.validated_data["token"].encode()).hexdigest()
         target_user = User.objects.filter(
-            email__iexact=email,
+            profile__first_login_token_hash=token_hash,
             profile__status=UserProfile.Status.ACTIVE,
         ).first()
         if not target_user:
-            return api_response(False, "User with this email was not found.", status.HTTP_404_NOT_FOUND)
+            return api_response(False, "Invalid first-login token.", status.HTTP_400_BAD_REQUEST)
 
         profile, _ = UserProfile.objects.get_or_create(user=target_user)
         if profile.password_set:
@@ -2617,7 +2615,7 @@ class FirstLoginResendLinkAPIView(APIView):
             True,
             "A new first-login link has been sent successfully.",
             status.HTTP_200_OK,
-            {"email": email, "mail_triggered": True, "expires_in_hours": 24},
+            {"mail_triggered": True, "expires_in_hours": 24},
         )
 
 

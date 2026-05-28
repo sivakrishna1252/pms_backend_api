@@ -189,7 +189,7 @@ ALLOWED_OFFICE_EMAIL_DOMAIN = os.getenv("ALLOWED_OFFICE_EMAIL_DOMAIN", "@apparat
 FRONTEND_LOGIN_URL = os.getenv("FRONTEND_LOGIN_URL", "http://nexus.aspune.cloud/auth/login")
 FRONTEND_FIRST_LOGIN_URL = os.getenv(
     "FRONTEND_FIRST_LOGIN_URL",
-    "http://nexus.aspune.cloud/auth/first-login",
+    "http://nexus.aspune.cloud/auth/activate-account",
 )
 
 # Local Ollama (admin AI assistant) — use /api/chat; model must exist in `ollama list`
