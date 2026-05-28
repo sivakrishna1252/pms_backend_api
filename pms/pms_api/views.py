@@ -8,6 +8,7 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 from html import escape
 from datetime import datetime, time
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import logging
 import secrets
 from drf_spectacular.types import OpenApiTypes
@@ -76,11 +77,22 @@ def _stop_timers_before_complete(task, actor):
 
 
 def _render_email_html(subject, greeting, intro_text, detail_rows, footer_note="Regards,<br>PMS Team"):
+    def _html_value(value):
+        text = str(value or "").strip()
+        if text.startswith("http://") or text.startswith("https://"):
+            href = escape(text, quote=True)
+            label = escape(text)
+            return (
+                f'<a href="{href}" target="_blank" rel="noopener noreferrer" '
+                f'style="color:#2563eb;text-decoration:underline;word-break:break-all;">{label}</a>'
+            )
+        return escape(text)
+
     detail_items = "".join(
         f"""
         <tr>
           <td style="padding:8px 0;color:#6b7280;font-size:14px;font-weight:600;vertical-align:top;width:180px;">{escape(str(label))}</td>
-          <td style="padding:8px 0;color:#111827;font-size:14px;">{escape(str(value))}</td>
+          <td style="padding:8px 0;color:#111827;font-size:14px;">{_html_value(value)}</td>
         </tr>
         """
         for label, value in detail_rows
@@ -613,6 +625,13 @@ def send_user_first_login_email(user):
         settings,
         "FRONTEND_LOGIN_URL",
         "http://nexus.aspune.cloud/auth/login",
+    )
+    parsed = urlsplit(first_login_url)
+    existing_query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if "email" not in existing_query:
+        existing_query["email"] = user.email
+    first_login_url = urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, urlencode(existing_query), parsed.fragment)
     )
     intro_text = "Your Project Management System account has been created. Complete your first login using OTP."
     detail_rows = [
