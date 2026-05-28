@@ -1047,8 +1047,19 @@ class FirstLoginVerifyOTPSerializer(serializers.Serializer):
 
 class FirstLoginSetPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    otp = serializers.CharField(min_length=6, max_length=6)
+    token = serializers.CharField(min_length=20)
     new_password = serializers.CharField(min_length=6, write_only=True)
+    confirm_password = serializers.CharField(min_length=6, write_only=True)
+
+    def validate(self, attrs):
+        if attrs.get("new_password") != attrs.get("confirm_password"):
+            raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
+        return attrs
+
+
+class FirstLoginTokenVerifySerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    token = serializers.CharField(min_length=20)
 
 
 class AdminAIAskSerializer(serializers.Serializer):

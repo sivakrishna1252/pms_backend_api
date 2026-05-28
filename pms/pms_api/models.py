@@ -51,6 +51,8 @@ class UserProfile(TimeStampedModel):
     password_set = models.BooleanField(default=False)
     first_login_otp = models.CharField(max_length=6, blank=True, default="")
     first_login_otp_expires_at = models.DateTimeField(null=True, blank=True)
+    first_login_token_hash = models.CharField(max_length=128, blank=True, default="")
+    first_login_token_expires_at = models.DateTimeField(null=True, blank=True)
     password_reset_otp = models.CharField(max_length=6, blank=True, default="")
     password_reset_otp_expires_at = models.DateTimeField(null=True, blank=True)
 

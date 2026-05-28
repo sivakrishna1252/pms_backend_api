@@ -9,6 +9,7 @@ from html import escape
 from datetime import datetime, time, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import logging
+import hashlib
 import secrets
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiExample, extend_schema
@@ -42,7 +43,7 @@ from .serializers import (
     AdminForgotPasswordVerifySerializer,
     FirstLoginRequestOTPSerializer,
     FirstLoginSetPasswordSerializer,
-    FirstLoginVerifyOTPSerializer,
+    FirstLoginTokenVerifySerializer,
     AdminPasswordResetSerializer,
     DeadlineChangeRequestSerializer,
     DeleteRequestSerializer,
@@ -66,6 +67,7 @@ User = get_user_model()
 logger = logging.getLogger(__name__)
 ADMIN_RESET_OTP_TTL_SECONDS = 600
 FIRST_LOGIN_OTP_TTL_SECONDS = 600
+FIRST_LOGIN_TOKEN_TTL_SECONDS = 24 * 60 * 60
 
 
 def _stop_timers_before_complete(task, actor):
@@ -619,15 +621,25 @@ def send_user_first_login_email(user):
     )
     parsed = urlsplit(first_login_url)
     existing_query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    if "email" not in existing_query:
-        existing_query["email"] = user.email
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+    profile.first_login_token_hash = token_hash
+    profile.first_login_token_expires_at = timezone.now() + timedelta(seconds=FIRST_LOGIN_TOKEN_TTL_SECONDS)
+    profile.save(update_fields=["first_login_token_hash", "first_login_token_expires_at"])
+    existing_query["email"] = user.email
+    existing_query["token"] = token
     first_login_url = urlunsplit(
         (parsed.scheme, parsed.netloc, parsed.path, urlencode(existing_query), parsed.fragment)
     )
-    intro_text = "Welcome to Apparatus Solutions PMS account. Your account has been created successfully. Complete your first login using OTP."
+    intro_text = (
+        "Welcome to Apparatus Solutions PMS account. Your account has been created successfully. "
+        "Click the link below to set your password."
+    )
     detail_rows = [
         ("Login Email", user.email),
         ("First Login URL", first_login_url),
+        ("Link Valid For", "24 hours"),
     ]
     try:
         _send_styled_email(
@@ -636,7 +648,10 @@ def send_user_first_login_email(user):
             greeting,
             intro_text,
             detail_rows,
-            footer_note="Use the first login link to verify OTP and set your own password.\n\nRegards,\nPMS Team",
+            footer_note=(
+                "This link expires in 24 hours. If expired, request a new link from the first-login page."
+                "\n\nRegards,\nPMS Team"
+            ),
         )
     except Exception:
         logger.exception("Failed to send first login email to %s", user.email)
@@ -2447,17 +2462,17 @@ class FirstLoginRequestOTPAPIView(APIView):
                 {"password_set": True},
             )
 
-        otp = f"{secrets.randbelow(10**6):06d}"
-        profile.first_login_otp = otp
-        profile.first_login_otp_expires_at = timezone.now() + timedelta(seconds=FIRST_LOGIN_OTP_TTL_SECONDS)
+        # Keep legacy OTP fields clear; first-login now uses invite-link token flow.
+        profile.first_login_otp = ""
+        profile.first_login_otp_expires_at = None
         profile.save(update_fields=["first_login_otp", "first_login_otp_expires_at"])
-        send_first_login_otp_email(target_user, otp)
+        send_user_first_login_email(target_user)
 
         return api_response(
             True,
-            "First-login OTP sent successfully. Mail sent successfully.",
+            "First-login link sent successfully. Mail sent successfully.",
             status.HTTP_200_OK,
-            {"email": email, "mail_triggered": True},
+            {"email": email, "mail_triggered": True, "expires_in_hours": 24},
         )
 
 
@@ -2465,13 +2480,13 @@ class FirstLoginRequestOTPAPIView(APIView):
 class FirstLoginVerifyOTPAPIView(APIView):
     permission_classes = [AllowAny]
 
-    @extend_schema(request=FirstLoginVerifyOTPSerializer, responses={200: OpenApiTypes.OBJECT})
+    @extend_schema(request=FirstLoginTokenVerifySerializer, responses={200: OpenApiTypes.OBJECT})
     def post(self, request):
-        serializer = FirstLoginVerifyOTPSerializer(data=request.data)
+        serializer = FirstLoginTokenVerifySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         email = serializer.validated_data["email"].lower().strip()
-        otp = serializer.validated_data["otp"]
+        token = serializer.validated_data["token"]
         target_user = User.objects.filter(
             email__iexact=email,
             profile__status=UserProfile.Status.ACTIVE,
@@ -2486,19 +2501,22 @@ class FirstLoginVerifyOTPAPIView(APIView):
                 "Password is already set. Please use regular login.",
                 status.HTTP_400_BAD_REQUEST,
             )
-        if (
-            not profile.first_login_otp
-            or profile.first_login_otp != otp
-            or not profile.first_login_otp_expires_at
-            or timezone.now() > profile.first_login_otp_expires_at
-        ):
-            return api_response(False, "Invalid or expired OTP.", status.HTTP_400_BAD_REQUEST)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        if not profile.first_login_token_hash or token_hash != profile.first_login_token_hash:
+            return api_response(False, "Invalid first-login token.", status.HTTP_400_BAD_REQUEST)
+        if not profile.first_login_token_expires_at or timezone.now() > profile.first_login_token_expires_at:
+            return api_response(
+                False,
+                "First-login token expired. Please request a new link.",
+                status.HTTP_400_BAD_REQUEST,
+                {"token_expired": True, "can_resend": True, "email": email},
+            )
 
         return api_response(
             True,
-            "OTP verified successfully. Please set your password.",
+            "Token verified successfully. Please set your password.",
             status.HTTP_200_OK,
-            {"email": email, "otp_verified": True},
+            {"email": email, "token_verified": True},
         )
 
 
@@ -2512,7 +2530,7 @@ class FirstLoginSetPasswordAPIView(APIView):
         serializer.is_valid(raise_exception=True)
 
         email = serializer.validated_data["email"].lower().strip()
-        otp = serializer.validated_data["otp"]
+        token = serializer.validated_data["token"]
         new_password = serializer.validated_data["new_password"]
 
         target_user = User.objects.filter(
@@ -2526,22 +2544,75 @@ class FirstLoginSetPasswordAPIView(APIView):
         if profile.password_set:
             return api_response(False, "Password is already set. Please use regular login.", status.HTTP_400_BAD_REQUEST)
 
-        if (
-            not profile.first_login_otp
-            or profile.first_login_otp != otp
-            or not profile.first_login_otp_expires_at
-            or timezone.now() > profile.first_login_otp_expires_at
-        ):
-            return api_response(False, "Invalid or expired OTP.", status.HTTP_400_BAD_REQUEST)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        if not profile.first_login_token_hash or token_hash != profile.first_login_token_hash:
+            return api_response(False, "Invalid first-login token.", status.HTTP_400_BAD_REQUEST)
+        if not profile.first_login_token_expires_at or timezone.now() > profile.first_login_token_expires_at:
+            return api_response(
+                False,
+                "First-login token expired. Please request a new link.",
+                status.HTTP_400_BAD_REQUEST,
+                {"token_expired": True, "can_resend": True, "email": email},
+            )
 
         target_user.set_password(new_password)
         target_user.save(update_fields=["password"])
         profile.password_set = True
         profile.first_login_otp = ""
         profile.first_login_otp_expires_at = None
-        profile.save(update_fields=["password_set", "first_login_otp", "first_login_otp_expires_at"])
+        profile.first_login_token_hash = ""
+        profile.first_login_token_expires_at = None
+        profile.save(
+            update_fields=[
+                "password_set",
+                "first_login_otp",
+                "first_login_otp_expires_at",
+                "first_login_token_hash",
+                "first_login_token_expires_at",
+            ]
+        )
 
-        return api_response(True, "Password set successfully.", status.HTTP_200_OK, {"email": target_user.email})
+        return api_response(
+            True,
+            "Password set successfully. Redirect to sign-in page.",
+            status.HTTP_200_OK,
+            {"email": target_user.email, "redirect_url": getattr(settings, "FRONTEND_LOGIN_URL", "")},
+        )
+
+
+@extend_schema(tags=["Common APIs"])
+class FirstLoginResendLinkAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(request=FirstLoginRequestOTPSerializer, responses={200: OpenApiTypes.OBJECT})
+    def post(self, request):
+        serializer = FirstLoginRequestOTPSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"].lower().strip()
+        target_user = User.objects.filter(
+            email__iexact=email,
+            profile__status=UserProfile.Status.ACTIVE,
+        ).first()
+        if not target_user:
+            return api_response(False, "User with this email was not found.", status.HTTP_404_NOT_FOUND)
+
+        profile, _ = UserProfile.objects.get_or_create(user=target_user)
+        if profile.password_set:
+            return api_response(
+                False,
+                "Password is already set. Please use regular login.",
+                status.HTTP_400_BAD_REQUEST,
+                {"password_set": True},
+            )
+
+        send_user_first_login_email(target_user)
+        return api_response(
+            True,
+            "A new first-login link has been sent successfully.",
+            status.HTTP_200_OK,
+            {"email": email, "mail_triggered": True, "expires_in_hours": 24},
+        )
 
 
 @extend_schema(tags=["Admin APIs"], request=AdminPasswordResetSerializer)
