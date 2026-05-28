@@ -48,6 +48,7 @@ class UserProfile(TimeStampedModel):
     department = models.CharField(max_length=100, blank=True, default="")
     tech_stack = models.CharField(max_length=100, blank=True)
     tech_notes = models.TextField(blank=True, default="")
+    password_set = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.user.email} ({self.role})"

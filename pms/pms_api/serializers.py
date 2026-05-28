@@ -151,7 +151,6 @@ class UserSerializer(serializers.ModelSerializer):
 
 #user create serializer
 class UserCreateSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=6)
     role = FlexibleChoiceField(
         choices=UserProfile.Roles.choices,
         normalizer=lambda v: normalize_choice_input(v, UserProfile.Roles),
@@ -180,7 +179,6 @@ class UserCreateSerializer(serializers.ModelSerializer):
             "first_name",
             "last_name",
             "email",
-            "password",
             "role",
             "status",
             "experience_level",
@@ -248,10 +246,9 @@ class UserCreateSerializer(serializers.ModelSerializer):
         department = validated_data.pop("department", "")
         tech_stack = validated_data.pop("tech_stack", "")
         tech_notes = validated_data.pop("tech_notes", "")
-        password = validated_data.pop("password")
         user = User(**validated_data)
         user.username = validated_data["email"]
-        user.set_password(password)
+        user.set_unusable_password()
         try:
             user.save()
         except IntegrityError:
@@ -266,6 +263,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
             department=department,
             tech_stack=tech_stack,
             tech_notes=tech_notes or "",
+            password_set=False,
         )
         return user
 
@@ -401,6 +399,10 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         if password:
             instance.set_password(password)
             instance.save(update_fields=["password"])
+            profile, _ = UserProfile.objects.get_or_create(user=instance)
+            if not profile.password_set:
+                profile.password_set = True
+                profile.save(update_fields=["password_set"])
 
         return instance
 
@@ -1029,6 +1031,21 @@ class AdminForgotPasswordRequestSerializer(serializers.Serializer):
 
 
 class AdminForgotPasswordVerifySerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    otp = serializers.CharField(min_length=6, max_length=6)
+    new_password = serializers.CharField(min_length=6, write_only=True)
+
+
+class FirstLoginRequestOTPSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
+class FirstLoginVerifyOTPSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    otp = serializers.CharField(min_length=6, max_length=6)
+
+
+class FirstLoginSetPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()
     otp = serializers.CharField(min_length=6, max_length=6)
     new_password = serializers.CharField(min_length=6, write_only=True)

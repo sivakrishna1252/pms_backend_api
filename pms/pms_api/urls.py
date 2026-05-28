@@ -11,6 +11,9 @@ from .views import (
     AdminForgotPasswordRequestOTPAPIView,
     AdminForgotPasswordVerifyOTPAPIView,
     AdminPasswordResetAPIView,
+    FirstLoginRequestOTPAPIView,
+    FirstLoginSetPasswordAPIView,
+    FirstLoginVerifyOTPAPIView,
     AdminOverviewAPIView,
     DashboardAPIView,
     FileAttachmentViewSet,
@@ -40,6 +43,9 @@ router.register(r"notifications", NotificationViewSet, basename="notifications")
 
 urlpatterns = [
     path("auth/login", LoginAPIView.as_view(), name="auth-login"),
+    path("auth/first-login/request-otp", FirstLoginRequestOTPAPIView.as_view(), name="first-login-request-otp"),
+    path("auth/first-login/verify-otp", FirstLoginVerifyOTPAPIView.as_view(), name="first-login-verify-otp"),
+    path("auth/first-login/set-password", FirstLoginSetPasswordAPIView.as_view(), name="first-login-set-password"),
     path("auth/admin/forgot-password/request-otp", AdminForgotPasswordRequestOTPAPIView.as_view(), name="admin-forgot-password-request-otp"),
     path("auth/admin/forgot-password/verify-otp", AdminForgotPasswordVerifyOTPAPIView.as_view(), name="admin-forgot-password-verify-otp"),
     path("auth/refresh", RefreshAPIView.as_view(), name="auth-refresh"),

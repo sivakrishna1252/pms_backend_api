@@ -40,6 +40,9 @@ from .serializers import (
     AuthResponseSerializer,
     AdminForgotPasswordRequestSerializer,
     AdminForgotPasswordVerifySerializer,
+    FirstLoginRequestOTPSerializer,
+    FirstLoginSetPasswordSerializer,
+    FirstLoginVerifyOTPSerializer,
     AdminPasswordResetSerializer,
     DeadlineChangeRequestSerializer,
     DeleteRequestSerializer,
@@ -62,6 +65,7 @@ from .serializers import (
 User = get_user_model()
 logger = logging.getLogger(__name__)
 ADMIN_RESET_OTP_TTL_SECONDS = 600
+FIRST_LOGIN_OTP_TTL_SECONDS = 600
 
 
 def _stop_timers_before_complete(task, actor):
@@ -527,6 +531,10 @@ def admin_otp_cache_key(email):
     return f"admin_reset_otp:{email.lower().strip()}"
 
 
+def first_login_otp_cache_key(email):
+    return f"first_login_otp:{email.lower().strip()}"
+
+
 def send_admin_reset_otp_email(user, otp):
     if not user.email:
         return
@@ -550,6 +558,29 @@ def send_admin_reset_otp_email(user, otp):
         logger.exception("Failed to send admin reset OTP email to %s", user.email)
 
 
+def send_first_login_otp_email(user, otp):
+    if not user.email:
+        return
+    subject = "PMS First Login OTP"
+    greeting = f"Hi {user.first_name or user.username},"
+    intro_text = "Use the OTP below to complete first-time login and set your password."
+    detail_rows = [
+        ("OTP", otp),
+        ("Valid For", f"{FIRST_LOGIN_OTP_TTL_SECONDS // 60} minutes"),
+    ]
+    try:
+        _send_styled_email(
+            subject,
+            [user.email],
+            greeting,
+            intro_text,
+            detail_rows,
+            footer_note="If you did not expect this, please ignore this email.\n\nRegards,\nPMS Team",
+        )
+    except Exception:
+        logger.exception("Failed to send first login OTP email to %s", user.email)
+
+
 def send_user_welcome_email(user, raw_password):
     if not user.email:
         return
@@ -571,6 +602,34 @@ def send_user_welcome_email(user, raw_password):
         )
     except Exception:
         logger.exception("Failed to send welcome email to %s", user.email)
+
+
+def send_user_first_login_email(user):
+    if not user.email:
+        return
+    subject = "Your PMS account is created"
+    greeting = f"Hi {user.first_name or user.username},"
+    first_login_url = getattr(
+        settings,
+        "FRONTEND_LOGIN_URL",
+        "http://nexus.aspune.cloud/auth/login",
+    )
+    intro_text = "Your Project Management System account has been created. Complete your first login using OTP."
+    detail_rows = [
+        ("Login Email", user.email),
+        ("Login URL", first_login_url),
+    ]
+    try:
+        _send_styled_email(
+            subject,
+            [user.email],
+            greeting,
+            intro_text,
+            detail_rows,
+            footer_note="Use the first login link to verify OTP and set your own password.\n\nRegards,\nPMS Team",
+        )
+    except Exception:
+        logger.exception("Failed to send first login email to %s", user.email)
 
 def send_user_password_changed_email(user, raw_password):
     if not user.email:
@@ -715,6 +774,14 @@ class LoginAPIView(APIView):
         serializer = AuthLoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        if not profile.password_set:
+            return api_response(
+                False,
+                "First-time login requires OTP verification and password setup.",
+                status.HTTP_403_FORBIDDEN,
+                {"first_login_required": True, "email": user.email},
+            )
         payload = AuthResponseSerializer.build(user)
         return api_response(True, "Login successful.", status.HTTP_200_OK, payload)
 
@@ -782,18 +849,14 @@ class UserViewSet(viewsets.ModelViewSet):
         return [IsAuthenticated(), IsAdmin()]
 
     def create(self, request, *args, **kwargs):
-        raw_password = request.data.get("password")
         serializer = UserCreateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         payload = UserSerializer(user).data
-        message = "User created successfully."
-        if raw_password:
-            send_user_welcome_email(user, raw_password)
-            message = "User created successfully. Mail sent successfully."
-            payload["mail_triggered"] = True
-        else:
-            payload["mail_triggered"] = False
+        send_user_first_login_email(user)
+        message = "User created successfully. First-login mail sent successfully."
+        payload["mail_triggered"] = True
+        payload["first_login_required"] = True
         return api_response(True, message, status.HTTP_201_CREATED, payload)
 
     def update(self, request, *args, **kwargs):
@@ -2348,6 +2411,104 @@ class AdminAIAskAPIView(APIView):
         )
 
 
+@extend_schema(tags=["Common APIs"])
+class FirstLoginRequestOTPAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(request=FirstLoginRequestOTPSerializer, responses={200: OpenApiTypes.OBJECT})
+    def post(self, request):
+        serializer = FirstLoginRequestOTPSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"].lower().strip()
+        target_user = User.objects.filter(
+            email__iexact=email,
+            profile__status=UserProfile.Status.ACTIVE,
+        ).first()
+        if not target_user:
+            return api_response(False, "User with this email was not found.", status.HTTP_404_NOT_FOUND)
+
+        profile, _ = UserProfile.objects.get_or_create(user=target_user)
+        if profile.password_set:
+            return api_response(
+                False,
+                "Password is already set. Please use regular login.",
+                status.HTTP_400_BAD_REQUEST,
+                {"password_set": True},
+            )
+
+        otp = f"{secrets.randbelow(10**6):06d}"
+        cache.set(first_login_otp_cache_key(email), otp, timeout=FIRST_LOGIN_OTP_TTL_SECONDS)
+        send_first_login_otp_email(target_user, otp)
+
+        return api_response(
+            True,
+            "First-login OTP sent successfully. Mail sent successfully.",
+            status.HTTP_200_OK,
+            {"email": email, "mail_triggered": True},
+        )
+
+
+@extend_schema(tags=["Common APIs"])
+class FirstLoginVerifyOTPAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(request=FirstLoginVerifyOTPSerializer, responses={200: OpenApiTypes.OBJECT})
+    def post(self, request):
+        serializer = FirstLoginVerifyOTPSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"].lower().strip()
+        otp = serializer.validated_data["otp"]
+        cached_otp = cache.get(first_login_otp_cache_key(email))
+        if not cached_otp or cached_otp != otp:
+            return api_response(False, "Invalid or expired OTP.", status.HTTP_400_BAD_REQUEST)
+
+        return api_response(
+            True,
+            "OTP verified successfully. Please set your password.",
+            status.HTTP_200_OK,
+            {"email": email, "otp_verified": True},
+        )
+
+
+@extend_schema(tags=["Common APIs"])
+class FirstLoginSetPasswordAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(request=FirstLoginSetPasswordSerializer, responses={200: OpenApiTypes.OBJECT})
+    def post(self, request):
+        serializer = FirstLoginSetPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"].lower().strip()
+        otp = serializer.validated_data["otp"]
+        new_password = serializer.validated_data["new_password"]
+
+        target_user = User.objects.filter(
+            email__iexact=email,
+            profile__status=UserProfile.Status.ACTIVE,
+        ).first()
+        if not target_user:
+            return api_response(False, "User with this email was not found.", status.HTTP_404_NOT_FOUND)
+
+        profile, _ = UserProfile.objects.get_or_create(user=target_user)
+        if profile.password_set:
+            return api_response(False, "Password is already set. Please use regular login.", status.HTTP_400_BAD_REQUEST)
+
+        cached_otp = cache.get(first_login_otp_cache_key(email))
+        if not cached_otp or cached_otp != otp:
+            return api_response(False, "Invalid or expired OTP.", status.HTTP_400_BAD_REQUEST)
+
+        target_user.set_password(new_password)
+        target_user.save(update_fields=["password"])
+        profile.password_set = True
+        profile.save(update_fields=["password_set"])
+        cache.delete(first_login_otp_cache_key(email))
+
+        return api_response(True, "Password set successfully.", status.HTTP_200_OK, {"email": target_user.email})
+
+
 @extend_schema(tags=["Admin APIs"], request=AdminPasswordResetSerializer)
 class AdminPasswordResetAPIView(APIView):
     permission_classes = [IsAuthenticated, IsAdmin]
@@ -2366,6 +2527,10 @@ class AdminPasswordResetAPIView(APIView):
 
         target_user.set_password(new_password)
         target_user.save(update_fields=["password"])
+        profile, _ = UserProfile.objects.get_or_create(user=target_user)
+        if not profile.password_set:
+            profile.password_set = True
+            profile.save(update_fields=["password_set"])
         return api_response(True, "Password updated successfully.", status.HTTP_200_OK, {"email": target_user.email})
 
 
@@ -2433,6 +2598,10 @@ class AdminForgotPasswordVerifyOTPAPIView(APIView):
 
         admin_user.set_password(new_password)
         admin_user.save(update_fields=["password"])
+        profile, _ = UserProfile.objects.get_or_create(user=admin_user)
+        if not profile.password_set:
+            profile.password_set = True
+            profile.save(update_fields=["password_set"])
         cache.delete(admin_otp_cache_key(email))
         return api_response(True, "Admin password reset successful.", status.HTTP_200_OK, {"email": admin_user.email})
 
