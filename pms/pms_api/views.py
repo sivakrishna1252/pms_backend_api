@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.core.cache import cache
 from django.core.mail import send_mail
+from django.db.models.deletion import ProtectedError
 from django.db.models import Case, Count, DecimalField, F, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -816,6 +817,46 @@ class UserViewSet(viewsets.ModelViewSet):
         kwargs["partial"] = True
         return self.update(request, *args, **kwargs)
 
+    def destroy(self, request, *args, **kwargs):
+        user = self.get_object()
+
+        if user.id == request.user.id:
+            return api_response(
+                False,
+                "You cannot delete your own account while logged in.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        user_id = user.id
+        user_label = user.get_full_name().strip() or user.email or f"user #{user_id}"
+        try:
+            self.perform_destroy(user)
+        except ProtectedError:
+            return api_response(
+                False,
+                (
+                    f"Cannot delete {user_label} because existing projects, milestones, or tasks "
+                    "still reference this account. Reassign ownership first, then try again."
+                ),
+                status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception:
+            logger.exception("Failed deleting user %s", user_id)
+            return api_response(
+                False,
+                (
+                    f"Cannot delete {user_label} right now because this account is still used by other records."
+                ),
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        return api_response(
+            True,
+            "User deleted successfully.",
+            status.HTTP_200_OK,
+            {"user_id": user_id},
+        )
+
     @extend_schema(responses={200: OpenApiTypes.OBJECT})
     @action(detail=False, methods=["get"], url_path="supervisors")
     def supervisors(self, request):
@@ -1219,6 +1260,7 @@ class TaskViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         self._reset_mail_state()
         previous_assignee_id = getattr(serializer.instance, "assigned_to_id", None)
+        previous_deadline = getattr(serializer.instance, "deadline", None)
         project = serializer.validated_data.get("project", serializer.instance.project)
         milestone = serializer.validated_data.get("milestone", serializer.instance.milestone)
         self._validate_project_milestone_scope(project, milestone)
@@ -1240,6 +1282,28 @@ class TaskViewSet(viewsets.ModelViewSet):
             )
             send_task_assignment_email(assignee, task)
             self._mail_triggered = True
+
+        # When BA/Admin updates a requested deadline, notify the assigned employee.
+        new_deadline = task.deadline
+        actor_role = user_role(self.request.user)
+        if (
+            assignee
+            and previous_deadline != new_deadline
+            and actor_role in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}
+        ):
+            Notification.objects.create(
+                user=assignee,
+                type="TASK_DEADLINE_UPDATED",
+                title="Task deadline updated",
+                message=(
+                    f"Your deadline request for task '{task.title}' was updated to "
+                    f"{new_deadline.isoformat() if new_deadline else 'Not set'} by "
+                    f"{'Admin' if actor_role == UserProfile.Roles.ADMIN else 'BA'}."
+                ),
+                details=_deadline_change_details_json(previous_deadline, new_deadline),
+                ref_type=Notification.RefType.TASK,
+                ref_id=task.id,
+            )
 
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop("partial", False)
