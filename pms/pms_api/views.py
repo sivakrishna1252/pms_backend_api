@@ -2096,8 +2096,19 @@ class DashboardAPIView(APIView):
                 "employee_summary": employee_summary,
             }
             return api_response(True, "BA dashboard fetched.", status.HTTP_200_OK, data)
+        active_log = (
+            TimeLog.objects.filter(user=user, end_time__isnull=True)
+            .select_related("task")
+            .order_by("-start_time")
+            .first()
+        )
+        active_task = (
+            {"id": active_log.task_id, "title": active_log.task.title}
+            if active_log
+            else None
+        )
         data = {
-            "active_task": Task.objects.filter(assigned_to=user, status=Task.Status.IN_PROGRESS).values("id", "title").first(),
+            "active_task": active_task,
             "completed_tasks": visible_completed_tasks_for_user(user).count(),
             "work_history_retention_months": WORK_HISTORY_RETENTION_MONTHS,
         }
