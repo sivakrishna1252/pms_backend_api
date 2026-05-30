@@ -679,21 +679,32 @@ def send_user_password_changed_email(user, raw_password):
         logger.exception("Failed to send password change email to %s", user.email)
 
 
+def _task_completion_recipient(task):
+    if task.is_self_created and task.supervisor_id:
+        return task.supervisor
+    return task.created_by
+
+
 def send_task_completed_email(task, completed_by):
-    owner = task.created_by
-    if not owner or not owner.email:
+    recipient = _task_completion_recipient(task)
+    if not recipient or not recipient.email:
         return
     completed_by_name = completed_by.get_full_name().strip() or completed_by.email
-    subject = f"Task Completed: {task.title}"
-    greeting = f"Hi {owner.first_name or owner.username},"
-    intro_text = "A task created by you is now marked as completed."
+    if task.is_self_created and task.supervisor_id:
+        subject = f"Employee Self-Created Task Completed: {task.title}"
+        greeting = f"Hi {recipient.first_name or recipient.username},"
+        intro_text = "An employee has completed a self-created task you were notified about."
+    else:
+        subject = f"Task Completed: {task.title}"
+        greeting = f"Hi {recipient.first_name or recipient.username},"
+        intro_text = "A task created by you is now marked as completed."
     detail_rows = [
         ("Task", task.title),
         ("Completed By", completed_by_name),
         ("Current Status", task.status),
     ]
     try:
-        _send_styled_email(subject, [owner.email], greeting, intro_text, detail_rows)
+        _send_styled_email(subject, [recipient.email], greeting, intro_text, detail_rows)
     except Exception:
         logger.exception("Failed to send task completion email for task %s", task.id)
 
@@ -1561,17 +1572,28 @@ class TaskViewSet(viewsets.ModelViewSet):
         task.save(update_fields=["status"])
         _sync_parent_statuses_for_task(task)
         mail_triggered = False
-        if status_value == Task.Status.COMPLETED and task.created_by:
-            Notification.objects.create(
-                user=task.created_by,
-                type="TASK_COMPLETED",
-                title="Task Completed",
-                message=f"Task '{task.title}' has been completed.",
-                ref_type=Notification.RefType.TASK,
-                ref_id=task.id,
-            )
-            send_task_completed_email(task, request.user)
-            mail_triggered = True
+        if status_value == Task.Status.COMPLETED:
+            recipient = _task_completion_recipient(task)
+            if recipient:
+                if task.is_self_created and task.supervisor_id:
+                    employee_name = (
+                        request.user.get_full_name().strip() or request.user.email
+                    )
+                    completion_message = (
+                        f"{employee_name} completed self-created task '{task.title}'."
+                    )
+                else:
+                    completion_message = f"Task '{task.title}' has been completed."
+                Notification.objects.create(
+                    user=recipient,
+                    type="TASK_COMPLETED",
+                    title="Task Completed",
+                    message=completion_message,
+                    ref_type=Notification.RefType.TASK,
+                    ref_id=task.id,
+                )
+                send_task_completed_email(task, request.user)
+                mail_triggered = True
         return api_response(
             True,
             "Task status updated." + (" Mail sent successfully." if mail_triggered else ""),
