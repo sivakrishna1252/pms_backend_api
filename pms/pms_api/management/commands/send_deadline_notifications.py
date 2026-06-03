@@ -13,7 +13,11 @@ from pms_api.timer_auto_stop import (
     running_time_logs_queryset,
     should_auto_stop_at_first_pass,
 )
-from pms_api.views import _send_styled_email, _sync_parent_statuses_for_task
+from pms_api.views import (
+    _admin_mail_recipients,
+    _send_styled_email,
+    _sync_parent_statuses_for_task,
+)
 
 
 User = get_user_model()
@@ -148,10 +152,13 @@ class Command(BaseCommand):
             )
 
     def _send_project_deadline_alerts(self, today, tomorrow):
-        admins_and_bas = User.objects.filter(
-            profile__role__in=[UserProfile.Roles.ADMIN, UserProfile.Roles.BA],
-            profile__status=UserProfile.Status.ACTIVE,
-        ).values_list("email", flat=True)
+        ba_emails = list(
+            User.objects.filter(
+                profile__role=UserProfile.Roles.BA,
+                profile__status=UserProfile.Status.ACTIVE,
+            ).values_list("email", flat=True)
+        )
+        recipients = [email for email in (_admin_mail_recipients() + ba_emails) if email]
 
         due_tomorrow = Project.objects.filter(
             deadline=tomorrow
@@ -164,7 +171,7 @@ class Command(BaseCommand):
                     f"Current status: {project.status}\n"
                     "Please review and take action."
                 ),
-                recipients=admins_and_bas,
+                recipients=recipients,
             )
 
         overdue_projects = Project.objects.filter(deadline__lt=today).exclude(
@@ -181,7 +188,7 @@ class Command(BaseCommand):
                     f"Current status changed to: {project.status}\n"
                     "Please review and take action."
                 ),
-                recipients=admins_and_bas,
+                recipients=recipients,
             )
 
     def _send_milestone_overdue_alerts(self, today):

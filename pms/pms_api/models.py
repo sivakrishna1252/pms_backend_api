@@ -140,7 +140,14 @@ class Task(TimeStampedModel):
     project = models.ForeignKey(
         Project, on_delete=models.CASCADE, related_name="tasks", null=True, blank=True
     )
-    milestone = models.ForeignKey(Milestone, on_delete=models.SET_NULL, null=True, blank=True, related_name="tasks")
+    # If a milestone is deleted, its tasks should also be deleted.
+    milestone = models.ForeignKey(
+        Milestone,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="tasks",
+    )
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     assigned_to = models.ForeignKey(
@@ -234,6 +241,42 @@ class TimeLog(TimeStampedModel):
         self.task.save(update_fields=["total_time_spent_seconds"])
 
 
+
+
+#project deadline change requests (BA -> Admin approval)
+class ProjectDeadlineChangeRequest(TimeStampedModel):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="deadline_change_requests")
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="project_deadline_change_requests",
+    )
+    current_deadline = models.DateField()
+    requested_deadline = models.DateField()
+    reason = models.TextField(blank=True, default="")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_project_deadline_requests",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    rejection_reason = models.TextField(blank=True, default="")
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["project", "status"]),
+        ]
+
+    def __str__(self):
+        return f"{self.project.name} deadline change ({self.status})"
 
 
 #notifications table

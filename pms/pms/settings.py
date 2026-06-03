@@ -206,6 +206,16 @@ EMAIL_HOST_USER = os.getenv("SMTP_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("SMTP_PASS", "")
 DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
 
+# Comma-separated admin notification emails (deadline requests, etc.). Override in .env for testing.
+_default_admin_mail_recipients = (
+    "vivek@apparatus.solutions,rishabh@apparatus.solutions,harsh.singh@apparatus.solutions"
+)
+ADMIN_MAIL_RECIPIENTS = [
+    email.strip()
+    for email in os.getenv("ADMIN_MAIL_RECIPIENTS", _default_admin_mail_recipients).split(",")
+    if email.strip()
+]
+
 # Shared secret for attendance service → in-app notifications (Bearer token).
 
 PMS_SERVICE_TOKEN = os.getenv("PMS_SERVICE_TOKEN", "").strip()

@@ -4,7 +4,18 @@ import re
 import urllib.error
 import urllib.request
 
+from django.conf import settings
+
 logger = logging.getLogger(__name__)
+
+
+def get_ollama_settings() -> dict[str, str | int]:
+    """Read Ollama connection from Django settings / environment."""
+    return {
+        "base_url": getattr(settings, "OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/"),
+        "model": getattr(settings, "OLLAMA_MODEL", "gemma4:e2b"),
+        "timeout": int(getattr(settings, "OLLAMA_TIMEOUT", 120)),
+    }
 
 
 class OllamaClientError(Exception):
@@ -47,8 +58,12 @@ def ollama_chat(
             original=e,
         ) from e
     except urllib.error.URLError as e:
+        hint = (
+            "If Ollama runs on a remote server, set OLLAMA_HOST=0.0.0.0:11434 on that server "
+            "and open firewall port 11434, or use an SSH tunnel. See pms/OLLAMA_SERVER.md."
+        )
         raise OllamaClientError(
-            "Cannot reach the Ollama server. Check OLLAMA_BASE_URL and that Ollama is running.",
+            f"Cannot reach Ollama at {url}. {hint} Original: {e.reason}",
             original=e,
         ) from e
     try:
@@ -57,6 +72,51 @@ def ollama_chat(
         raise OllamaClientError("Invalid JSON from Ollama.", original=e) from e
     text = (data.get("message") or {}).get("content") or ""
     return _strip_thinking_block(text).strip()
+
+
+def ollama_health(*, base_url: str, timeout: int = 15) -> dict:
+    """
+    Call Ollama GET /api/tags. Returns {reachable, models, configured_model, model_available}.
+    Raises OllamaClientError when the server cannot be reached or returns invalid JSON.
+    """
+    url = f"{base_url.rstrip('/')}/api/tags"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        raise OllamaClientError(
+            f"Ollama returned HTTP {e.code}. {detail[:500]}",
+            original=e,
+        ) from e
+    except urllib.error.URLError as e:
+        hint = (
+            "If Ollama runs on a remote server, set OLLAMA_HOST=0.0.0.0:11434 on that server "
+            "and open firewall port 11434. See pms/OLLAMA_SERVER.md."
+        )
+        raise OllamaClientError(
+            f"Cannot reach Ollama at {url}. {hint} Original: {e.reason}",
+            original=e,
+        ) from e
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise OllamaClientError("Invalid JSON from Ollama.", original=e) from e
+
+    models = [m.get("name") for m in (data.get("models") or []) if m.get("name")]
+    cfg = get_ollama_settings()
+    configured = str(cfg["model"])
+    model_available = configured in models or any(
+        configured.split(":")[0] == (name or "").split(":")[0] for name in models
+    )
+    return {
+        "reachable": True,
+        "base_url": base_url.rstrip("/"),
+        "models": models,
+        "configured_model": configured,
+        "model_available": model_available,
+    }
 
 
 # Some chat models return a hidden "thinking" block before the user-visible answer.

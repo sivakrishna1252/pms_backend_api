@@ -8,6 +8,7 @@ from .export_views import (
 )
 from .views import (
     AdminAIAskAPIView,
+    AdminAIHealthAPIView,
     AdminForgotPasswordRequestOTPAPIView,
     AdminForgotPasswordVerifyOTPAPIView,
     AdminPasswordResetAPIView,
@@ -60,6 +61,7 @@ urlpatterns = [
     path("admin/exports/projects/", ProjectsExportAPIView.as_view(), name="admin-export-projects"),
     path("admin/exports/milestones/", MilestonesExportAPIView.as_view(), name="admin-export-milestones"),
     path("admin/exports/tasks/", TasksExportAPIView.as_view(), name="admin-export-tasks"),
+    path("admin/ai/health", AdminAIHealthAPIView.as_view(), name="admin-ai-health"),
     path("admin/ai/ask", AdminAIAskAPIView.as_view(), name="admin-ai-ask"),
     path("work-tracking", WorkTrackingAPIView.as_view(), name="work-tracking"),
     path("admin/reset-password", AdminPasswordResetAPIView.as_view(), name="admin-reset-password"),

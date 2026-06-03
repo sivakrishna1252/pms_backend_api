@@ -1,6 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.db.models import Case, Count, DecimalField, F, Q, Sum, Value, When
 from django.db.models.functions import Coalesce
@@ -24,15 +25,25 @@ from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 
 
 from .ai_readonly_context import build_readonly_context_text
-from .models import FileAttachment, Milestone, Notification, Project, Task, TimeLog, UserProfile, humanize_duration
+from .models import (
+    FileAttachment,
+    Milestone,
+    Notification,
+    Project,
+    ProjectDeadlineChangeRequest,
+    Task,
+    TimeLog,
+    UserProfile,
+    humanize_duration,
+)
 from .timer_state import assignee_timer_state, stop_open_timers_for_task
 from .work_history_retention import (
     WORK_HISTORY_RETENTION_MONTHS,
     apply_work_history_retention,
     visible_completed_tasks_for_user,
 )
-from .ollama_client import OllamaClientError, ollama_chat
-from .progress import milestone_progress_data, project_progress_data
+from .ollama_client import OllamaClientError, get_ollama_settings, ollama_chat, ollama_health
+from .progress import milestone_progress_data, project_progress_data, work_tracking_progress_for_tasks
 from .pagination import StandardResultsSetPagination
 from .permissions import IsAdmin, IsAdminOrBA, IsServiceToken, user_role
 from .serializers import (
@@ -47,6 +58,7 @@ from .serializers import (
     FirstLoginTokenVerifySerializer,
     AdminPasswordResetSerializer,
     DeadlineChangeRequestSerializer,
+    DeadlineChangeRejectSerializer,
     DeleteRequestSerializer,
     FileAttachmentSerializer,
     FileUploadRequestSerializer,
@@ -188,7 +200,7 @@ def _deadline_change_notification_message(
     return base
 
 
-def _deadline_change_details_json(old_deadline, new_deadline):
+def _deadline_change_details_json(old_deadline, new_deadline, **extra):
     """Structured fields for notification UI (survives alongside message text)."""
 
     def _fmt(d):
@@ -198,10 +210,215 @@ def _deadline_change_details_json(old_deadline, new_deadline):
             return d.isoformat()
         return str(d)
 
-    return {
+    payload = {
         "deadline_from": _fmt(old_deadline),
         "deadline_to": _fmt(new_deadline),
     }
+    payload.update(extra)
+    return payload
+
+
+def _user_display_name(user) -> str:
+    if not user:
+        return "User"
+    return (user.get_full_name() or "").strip() or getattr(user, "email", None) or "User"
+
+
+def _get_pending_project_deadline_request(project):
+    return (
+        ProjectDeadlineChangeRequest.objects.filter(
+            project=project,
+            status=ProjectDeadlineChangeRequest.Status.PENDING,
+        )
+        .select_related("requested_by", "project")
+        .order_by("-created_at")
+        .first()
+    )
+
+
+def _project_deadline_request_payload(change_request):
+    project = change_request.project
+    requester = change_request.requested_by
+    reviewer = change_request.reviewed_by
+    status_value = change_request.status
+    return {
+        "id": change_request.id,
+        "request_id": change_request.id,
+        "project_id": project.id,
+        "project_name": project.name,
+        "start_date": project.start_date.isoformat() if project.start_date else None,
+        "status": status_value,
+        "can_respond": status_value == ProjectDeadlineChangeRequest.Status.PENDING,
+        "requested_by_name": _user_display_name(requester),
+        "requested_on": change_request.created_at.isoformat() if change_request.created_at else None,
+        "current_deadline": change_request.current_deadline.isoformat(),
+        "deadline_from": change_request.current_deadline.isoformat(),
+        "proposed_deadline": change_request.requested_deadline.isoformat(),
+        "deadline_to": change_request.requested_deadline.isoformat(),
+        "new_deadline": change_request.requested_deadline.isoformat(),
+        "days_extension": max(
+            0,
+            (change_request.requested_deadline - change_request.current_deadline).days,
+        ),
+        "reason": (change_request.reason or "").strip(),
+        "reviewed_by_name": _user_display_name(reviewer) if reviewer else None,
+        "reviewed_at": change_request.reviewed_at.isoformat() if change_request.reviewed_at else None,
+        "rejection_reason": (change_request.rejection_reason or "").strip(),
+    }
+
+
+def _already_reviewed_deadline_response(project):
+    resolved = (
+        ProjectDeadlineChangeRequest.objects.filter(project=project)
+        .exclude(status=ProjectDeadlineChangeRequest.Status.PENDING)
+        .select_related("reviewed_by", "requested_by", "project")
+        .order_by("-reviewed_at", "-id")
+        .first()
+    )
+    if not resolved:
+        return api_response(
+            False,
+            "No pending deadline change request for this project.",
+            status.HTTP_400_BAD_REQUEST,
+        )
+    reviewer_name = _user_display_name(resolved.reviewed_by)
+    status_label = resolved.status.lower()
+    return api_response(
+        False,
+        f"This deadline change request was already {status_label} by {reviewer_name}.",
+        status.HTTP_409_CONFLICT,
+        _project_deadline_request_payload(resolved),
+    )
+
+
+def _complete_project_deadline_review(project, reviewer, *, approved, rejection_reason=""):
+    with transaction.atomic():
+        change_request = (
+            ProjectDeadlineChangeRequest.objects.select_for_update()
+            .filter(
+                project=project,
+                status=ProjectDeadlineChangeRequest.Status.PENDING,
+            )
+            .select_related("requested_by", "project")
+            .order_by("-created_at")
+            .first()
+        )
+        if not change_request:
+            return None, _already_reviewed_deadline_response(project)
+
+        change_request.status = (
+            ProjectDeadlineChangeRequest.Status.APPROVED
+            if approved
+            else ProjectDeadlineChangeRequest.Status.REJECTED
+        )
+        change_request.reviewed_by = reviewer
+        change_request.reviewed_at = timezone.now()
+        update_fields = ["status", "reviewed_by", "reviewed_at", "updated_at"]
+        if not approved:
+            change_request.rejection_reason = rejection_reason or ""
+            update_fields.append("rejection_reason")
+        change_request.save(update_fields=update_fields)
+
+        if approved:
+            project.deadline = change_request.requested_deadline
+            project.save(update_fields=["deadline", "updated_at"])
+
+    _notify_project_deadline_decision(
+        change_request,
+        approved=approved,
+        reviewer=reviewer,
+        rejection_reason=rejection_reason,
+    )
+    return change_request, None
+
+
+def _notify_project_deadline_decision(change_request, *, approved: bool, reviewer, rejection_reason=""):
+    project = change_request.project
+    requester = change_request.requested_by
+    reviewer_name = _user_display_name(reviewer)
+    decision_word = "approved" if approved else "rejected"
+    new_deadline_text = (
+        change_request.requested_deadline.isoformat()
+        if approved and change_request.requested_deadline
+        else change_request.current_deadline.isoformat()
+    )
+
+    if requester:
+        ba_message = (
+            f"{reviewer_name} {decision_word} your deadline change request for project "
+            f"'{project.name}' ({change_request.current_deadline.isoformat()} → "
+            f"{change_request.requested_deadline.isoformat()})."
+        )
+        if not approved and (rejection_reason or "").strip():
+            ba_message = f"{ba_message} Reason: {rejection_reason.strip()}"
+        Notification.objects.create(
+            user=requester,
+            type="PROJECT_DEADLINE_CHANGE_DECISION",
+            title=f"Project deadline change {decision_word}",
+            message=ba_message,
+            details=_deadline_change_details_json(
+                change_request.current_deadline,
+                change_request.requested_deadline,
+                request_id=change_request.id,
+                project_id=project.id,
+                project_name=project.name,
+                approved=approved,
+                reviewer_name=reviewer_name,
+                rejection_reason=(rejection_reason or "").strip(),
+            ),
+            ref_type=Notification.RefType.PROJECT,
+            ref_id=project.id,
+        )
+
+    admin_users = User.objects.filter(
+        profile__role=UserProfile.Roles.ADMIN,
+        profile__status=UserProfile.Status.ACTIVE,
+    ).exclude(id=reviewer.id)
+    requester_name = _user_display_name(requester)
+    for admin_user in admin_users:
+        Notification.objects.create(
+            user=admin_user,
+            type="PROJECT_DEADLINE_CHANGE_DECISION",
+            title=f"Project deadline change {decision_word}",
+            message=(
+                f"{reviewer_name} {decision_word} {requester_name}'s deadline change request "
+                f"for project '{project.name}'."
+            ),
+            details=_deadline_change_details_json(
+                change_request.current_deadline,
+                change_request.requested_deadline,
+                request_id=change_request.id,
+                project_id=project.id,
+                project_name=project.name,
+                approved=approved,
+                requester_name=requester_name,
+                reviewer_name=reviewer_name,
+            ),
+            ref_type=Notification.RefType.PROJECT,
+            ref_id=project.id,
+        )
+
+    if requester and requester.email:
+        subject = f"Project Deadline Change {decision_word.title()}: {project.name}"
+        greeting = f"Hi {requester.first_name or requester.username},"
+        intro_text = f"An admin has {decision_word} your project deadline change request."
+        detail_rows = [
+            ("Project", project.name),
+            ("Reviewed By", reviewer_name),
+            ("Decision", decision_word.title()),
+            ("Previous Deadline", change_request.current_deadline),
+            ("Requested Deadline", change_request.requested_deadline),
+            ("Effective Deadline", new_deadline_text),
+        ]
+        if not approved and (rejection_reason or "").strip():
+            detail_rows.append(("Rejection Reason", rejection_reason.strip()))
+        try:
+            _send_styled_email(subject, [requester.email], greeting, intro_text, detail_rows)
+        except Exception:
+            logger.exception(
+                "Failed project deadline decision email for request %s",
+                change_request.id,
+            )
 
 
 def apply_automatic_task_status_rules():
@@ -241,17 +458,18 @@ def _build_notification_recent_activity(user, window_start=None):
     """Include in-app alerts (e.g. employee self-created tasks) on dashboard feeds."""
     if user is None or not getattr(user, "is_authenticated", True):
         return []
-    qs = Notification.objects.filter(user=user, type="TASK_SELF_CREATED")
+    events = []
+
+    self_created_qs = Notification.objects.filter(user=user, type="TASK_SELF_CREATED")
     if window_start is not None:
-        qs = qs.filter(created_at__gte=window_start)
-    notifications = list(qs.order_by("-created_at")[:40])
-    task_ids = [n.ref_id for n in notifications if n.ref_id]
+        self_created_qs = self_created_qs.filter(created_at__gte=window_start)
+    self_created = list(self_created_qs.order_by("-created_at")[:40])
+    task_ids = [n.ref_id for n in self_created if n.ref_id]
     tasks_by_id = {
         t.id: t
         for t in Task.objects.select_related("project").filter(id__in=task_ids)
     }
-    events = []
-    for notification in notifications:
+    for notification in self_created:
         details = notification.details or {}
         employee_name = details.get("employee_name") or "Employee"
         task = tasks_by_id.get(notification.ref_id) if notification.ref_id else None
@@ -266,6 +484,84 @@ def _build_notification_recent_activity(user, window_start=None):
                 "timestamp": notification.created_at,
             }
         )
+
+    role = user_role(user)
+    if role == UserProfile.Roles.ADMIN:
+        events.extend(_build_pending_project_deadline_activity(user))
+        events.extend(_build_resolved_project_deadline_activity(user, window_start))
+
+    return events
+
+
+def _build_pending_project_deadline_activity(user):
+    """Pending BA project deadline requests — any admin can approve or reject."""
+    if user_role(user) != UserProfile.Roles.ADMIN:
+        return []
+
+    pending_requests = (
+        ProjectDeadlineChangeRequest.objects.filter(
+            status=ProjectDeadlineChangeRequest.Status.PENDING,
+        )
+        .select_related("project", "requested_by")
+        .order_by("-created_at")[:20]
+    )
+    events = []
+    for change_request in pending_requests:
+        requester_name = _user_display_name(change_request.requested_by)
+        events.append(
+            {
+                "action": "DEADLINE_REQUEST",
+                "employee_name": requester_name,
+                "task_id": 0,
+                "task_title": "",
+                "project_id": change_request.project_id,
+                "project_name": change_request.project.name,
+                "request_id": change_request.id,
+                "deadline_from": change_request.current_deadline.isoformat(),
+                "deadline_to": change_request.requested_deadline.isoformat(),
+                "reason": (change_request.reason or "").strip(),
+                "can_respond": True,
+                "timestamp": change_request.created_at,
+            }
+        )
+    return events
+
+
+def _build_resolved_project_deadline_activity(user, window_start=None):
+    """Show who approved/rejected a project deadline request in recent activity."""
+    role = user_role(user)
+    if role not in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
+        return []
+
+    qs = ProjectDeadlineChangeRequest.objects.exclude(
+        status=ProjectDeadlineChangeRequest.Status.PENDING,
+    ).select_related("project", "requested_by", "reviewed_by")
+    if window_start is not None:
+        qs = qs.filter(reviewed_at__gte=window_start)
+    if role == UserProfile.Roles.BA:
+        qs = qs.filter(requested_by=user)
+
+    events = []
+    for change_request in qs.order_by("-reviewed_at")[:20]:
+        reviewer_name = _user_display_name(change_request.reviewed_by)
+        requester_name = _user_display_name(change_request.requested_by)
+        approved = change_request.status == ProjectDeadlineChangeRequest.Status.APPROVED
+        events.append(
+            {
+                "action": "DEADLINE_APPROVED" if approved else "DEADLINE_REJECTED",
+                "employee_name": reviewer_name,
+                "task_id": 0,
+                "task_title": "",
+                "project_id": change_request.project_id,
+                "project_name": change_request.project.name,
+                "request_id": change_request.id,
+                "requester_name": requester_name,
+                "deadline_from": change_request.current_deadline.isoformat(),
+                "deadline_to": change_request.requested_deadline.isoformat(),
+                "can_respond": False,
+                "timestamp": change_request.reviewed_at or change_request.updated_at,
+            }
+        )
     return events
 
 
@@ -277,62 +573,85 @@ def _merge_recent_activity_events(*event_lists, limit=20):
     return events[:limit]
 
 
-def _sync_parent_statuses_for_task(task: Task) -> None:
-    """Keep milestone/project statuses aligned with underlying task statuses."""
+def _resolve_aggregate_status(tasks_qs):
+    """Derive rollup status from task states and work-tracking progress."""
     today = timezone.localdate()
-
-    def _resolve_status(tasks_qs):
-        total = tasks_qs.count()
-        if total == 0:
-            return "NOT_STARTED"
-        completed = tasks_qs.filter(status=Task.Status.COMPLETED).count()
-        if completed == total:
-            return "COMPLETED"
-        delayed = tasks_qs.filter(
-            Q(status=Task.Status.DELAYED)
-            | (Q(deadline__isnull=False) & Q(deadline__lt=today) & ~Q(status=Task.Status.COMPLETED))
-        ).exists()
-        if delayed:
-            return "DELAYED"
-        active = tasks_qs.filter(status__in=[Task.Status.IN_PROGRESS, Task.Status.PAUSED]).exists()
-        if active:
-            return "IN_PROGRESS"
+    total = tasks_qs.count()
+    if total == 0:
         return "NOT_STARTED"
 
-    if task.milestone_id:
-        ms_tasks = Task.objects.filter(milestone_id=task.milestone_id)
-        ms_state = _resolve_status(ms_tasks)
-        milestone = task.milestone
-        if milestone:
-            mapped_ms_status = (
-                Milestone.Status.COMPLETED
-                if ms_state == "COMPLETED"
-                else Milestone.Status.DELAYED
-                if ms_state == "DELAYED"
-                else Milestone.Status.IN_PROGRESS
-                if ms_state == "IN_PROGRESS"
-                else Milestone.Status.NOT_STARTED
-            )
-            if milestone.status != mapped_ms_status:
-                milestone.status = mapped_ms_status
-                milestone.save(update_fields=["status"])
+    progress_snapshot = work_tracking_progress_for_tasks(tasks_qs)
+    completed = progress_snapshot.get("completed_task_count", 0)
+    progress_pct = progress_snapshot.get("progress_percent") or 0
 
-    prj_tasks = Task.objects.filter(project_id=task.project_id)
-    prj_state = _resolve_status(prj_tasks)
-    project = task.project
-    if project:
-        mapped_project_status = (
-            Project.Status.COMPLETED
-            if prj_state == "COMPLETED"
-            else Project.Status.DELAYED
-            if prj_state == "DELAYED"
-            else Project.Status.ACTIVE
-            if prj_state == "IN_PROGRESS"
-            else Project.Status.PLANNED
-        )
-        if project.status != mapped_project_status:
-            project.status = mapped_project_status
-            project.save(update_fields=["status"])
+    if completed >= total:
+        return "COMPLETED"
+
+    delayed = tasks_qs.filter(
+        Q(status=Task.Status.DELAYED)
+        | (Q(deadline__isnull=False) & Q(deadline__lt=today) & ~Q(status=Task.Status.COMPLETED))
+    ).exists()
+    if delayed:
+        return "DELAYED"
+
+    active = tasks_qs.filter(status__in=[Task.Status.IN_PROGRESS, Task.Status.PAUSED]).exists()
+    if active:
+        return "IN_PROGRESS"
+
+    # Partial work or completed tasks without an explicit IN_PROGRESS flag
+    if progress_pct > 0 or completed > 0:
+        return "IN_PROGRESS"
+
+    return "NOT_STARTED"
+
+
+def _milestone_status_from_aggregate(aggregate_state: str) -> str:
+    if aggregate_state == "COMPLETED":
+        return Milestone.Status.COMPLETED
+    if aggregate_state == "DELAYED":
+        return Milestone.Status.DELAYED
+    if aggregate_state == "IN_PROGRESS":
+        return Milestone.Status.IN_PROGRESS
+    return Milestone.Status.NOT_STARTED
+
+
+def _project_status_from_aggregate(aggregate_state: str) -> str:
+    if aggregate_state == "COMPLETED":
+        return Project.Status.COMPLETED
+    if aggregate_state == "DELAYED":
+        return Project.Status.DELAYED
+    if aggregate_state == "IN_PROGRESS":
+        return Project.Status.ACTIVE
+    return Project.Status.PLANNED
+
+
+def sync_parent_statuses_for_project(project_id: int) -> None:
+    """Recompute milestone and project status from all tasks in the project."""
+    if not project_id:
+        return
+
+    for milestone in Milestone.objects.filter(project_id=project_id):
+        ms_tasks = Task.objects.filter(milestone_id=milestone.id)
+        mapped_ms_status = _milestone_status_from_aggregate(_resolve_aggregate_status(ms_tasks))
+        if milestone.status != mapped_ms_status:
+            milestone.status = mapped_ms_status
+            milestone.save(update_fields=["status"])
+
+    project = Project.objects.filter(id=project_id).first()
+    if not project:
+        return
+
+    prj_tasks = Task.objects.filter(project_id=project_id)
+    mapped_project_status = _project_status_from_aggregate(_resolve_aggregate_status(prj_tasks))
+    if project.status != mapped_project_status:
+        project.status = mapped_project_status
+        project.save(update_fields=["status"])
+
+
+def _sync_parent_statuses_for_task(task: Task) -> None:
+    """Keep milestone/project statuses aligned with underlying tasks and work progress."""
+    if task.project_id:
+        sync_parent_statuses_for_project(task.project_id)
 
 
 def build_admin_overview_payload(project_id=None, milestone_id=None, task_id=None):
@@ -769,7 +1088,12 @@ def _task_deadline_change_recipient(task):
     return task.created_by
 
 
+def _admin_mail_recipients():
+    return list(getattr(settings, "ADMIN_MAIL_RECIPIENTS", []) or [])
+
+
 def send_project_change_request_email(project, requester, admin_emails, request_type, new_deadline=None, reason=""):
+    admin_emails = _admin_mail_recipients()
     if not admin_emails:
         return
     requester_name = requester.get_full_name().strip() or requester.email
@@ -1010,12 +1334,30 @@ class ProjectViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated(), IsAdmin()]
         if self.action in {"create", "update", "partial_update", "request_deadline_change"}:
             return [IsAuthenticated(), IsAdminOrBA()]
+        if self.action in {
+            "approve_deadline_change",
+            "reject_deadline_change",
+            "get_deadline_change_request",
+        }:
+            return [IsAuthenticated(), IsAdmin()]
         if self.action == "request_delete":
             return [IsAuthenticated(), IsAdmin()]
         return [IsAuthenticated()]
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        targets = page if page is not None else queryset
+        for project in targets:
+            sync_parent_statuses_for_project(project.id)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     def create(self, request, *args, **kwargs):
         return super().create(request, *args, **kwargs)
@@ -1038,11 +1380,36 @@ class ProjectViewSet(viewsets.ModelViewSet):
         new_deadline = serializer.validated_data.get("new_deadline")
         reason = serializer.validated_data.get("reason", "")
 
+        if not new_deadline:
+            return api_response(False, "new_deadline is required.", status.HTTP_400_BAD_REQUEST)
+        if new_deadline < project.start_date:
+            return api_response(
+                False,
+                "Requested deadline cannot be before the project start date.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        if _get_pending_project_deadline_request(project):
+            return api_response(
+                False,
+                "A deadline change request is already pending for this project.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        change_request = ProjectDeadlineChangeRequest.objects.create(
+            project=project,
+            requested_by=request.user,
+            current_deadline=project.deadline,
+            requested_deadline=new_deadline,
+            reason=reason or "",
+        )
+
         admin_users = User.objects.filter(
             profile__role=UserProfile.Roles.ADMIN,
             profile__status=UserProfile.Status.ACTIVE,
         )
-        admin_emails = [user.email for user in admin_users if user.email]
+        admin_emails = _admin_mail_recipients()
+        requester_name = _user_display_name(request.user)
         for admin_user in admin_users:
             Notification.objects.create(
                 user=admin_user,
@@ -1056,7 +1423,15 @@ class ProjectViewSet(viewsets.ModelViewSet):
                     new_deadline=new_deadline,
                     reason=reason,
                 ),
-                details=_deadline_change_details_json(project.deadline, new_deadline),
+                details=_deadline_change_details_json(
+                    project.deadline,
+                    new_deadline,
+                    request_id=change_request.id,
+                    project_id=project.id,
+                    project_name=project.name,
+                    requester_name=requester_name,
+                    reason=(reason or "").strip(),
+                ),
                 ref_type=Notification.RefType.PROJECT,
                 ref_id=project.id,
             )
@@ -1076,9 +1451,98 @@ class ProjectViewSet(viewsets.ModelViewSet):
             status.HTTP_200_OK,
             {
                 "project_id": project.id,
+                "request_id": change_request.id,
                 "new_deadline": new_deadline,
                 "reason": reason,
                 "mail_triggered": mail_triggered,
+            },
+        )
+
+    @extend_schema(responses={200: OpenApiTypes.OBJECT})
+    @action(detail=True, methods=["get"], url_path="deadline-change-request")
+    def get_deadline_change_request(self, request, pk=None):
+        project = self.get_object()
+        request_id = request.query_params.get("request_id")
+        qs = ProjectDeadlineChangeRequest.objects.filter(project=project).select_related(
+            "requested_by", "reviewed_by", "project"
+        )
+        if request_id:
+            change_request = qs.filter(id=request_id).first()
+        else:
+            change_request = (
+                qs.filter(status=ProjectDeadlineChangeRequest.Status.PENDING)
+                .order_by("-created_at")
+                .first()
+            )
+            if not change_request:
+                change_request = qs.order_by("-created_at").first()
+        if not change_request:
+            return api_response(
+                False,
+                "No deadline change request found for this project.",
+                status.HTTP_404_NOT_FOUND,
+            )
+        return api_response(
+            True,
+            "Deadline change request loaded.",
+            status.HTTP_200_OK,
+            _project_deadline_request_payload(change_request),
+        )
+
+    @extend_schema(responses={200: OpenApiTypes.OBJECT})
+    @action(detail=True, methods=["post"], url_path="approve-deadline-change")
+    def approve_deadline_change(self, request, pk=None):
+        project = self.get_object()
+        change_request, error_response = _complete_project_deadline_review(
+            project,
+            request.user,
+            approved=True,
+        )
+        if error_response:
+            return error_response
+
+        reviewer_name = _user_display_name(request.user)
+        return api_response(
+            True,
+            f"Project deadline updated to {change_request.requested_deadline.isoformat()}.",
+            status.HTTP_200_OK,
+            {
+                "project_id": project.id,
+                "request_id": change_request.id,
+                "new_deadline": change_request.requested_deadline,
+                "reviewed_by": reviewer_name,
+                **_project_deadline_request_payload(change_request),
+            },
+        )
+
+    @extend_schema(request=DeadlineChangeRejectSerializer, responses={200: OpenApiTypes.OBJECT})
+    @action(detail=True, methods=["post"], url_path="reject-deadline-change")
+    def reject_deadline_change(self, request, pk=None):
+        project = self.get_object()
+        serializer = DeadlineChangeRejectSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        rejection_reason = serializer.validated_data.get("reason", "")
+
+        change_request, error_response = _complete_project_deadline_review(
+            project,
+            request.user,
+            approved=False,
+            rejection_reason=rejection_reason,
+        )
+        if error_response:
+            return error_response
+
+        reviewer_name = _user_display_name(request.user)
+        return api_response(
+            True,
+            "Project deadline change request rejected.",
+            status.HTTP_200_OK,
+            {
+                "project_id": project.id,
+                "request_id": change_request.id,
+                "reviewed_by": reviewer_name,
+                "rejection_reason": rejection_reason or "",
+                **_project_deadline_request_payload(change_request),
             },
         )
 
@@ -1097,7 +1561,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             profile__role=UserProfile.Roles.ADMIN,
             profile__status=UserProfile.Status.ACTIVE,
         )
-        admin_emails = [user.email for user in admin_users if user.email]
+        admin_emails = _admin_mail_recipients()
         for admin_user in admin_users:
             Notification.objects.create(
                 user=admin_user,
@@ -1167,6 +1631,19 @@ class MilestoneViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        targets = page if page is not None else queryset
+        project_ids = {m.project_id for m in targets if m.project_id}
+        for project_id in project_ids:
+            sync_parent_statuses_for_project(project_id)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
     def create(self, request, *args, **kwargs):
         return super().create(request, *args, **kwargs)
@@ -1766,25 +2243,24 @@ class InternalAdminUsersAPIView(APIView):
     permission_classes = [IsServiceToken]
 
     def get(self, request):
-        admins = (
-            User.objects.filter(
-                profile__role=UserProfile.Roles.ADMIN,
-                profile__status=UserProfile.Status.ACTIVE,
+        fixed_admin_emails = _admin_mail_recipients()
+        users_by_email = {
+            (user.email or "").lower(): user
+            for user in User.objects.filter(email__in=fixed_admin_emails).select_related("profile")
+        }
+        payload = []
+        for email in fixed_admin_emails:
+            user = users_by_email.get(email.lower())
+            payload.append(
+                {
+                    "id": user.id if user else None,
+                    "email": email,
+                    "first_name": user.first_name if user else "",
+                    "last_name": user.last_name if user else "",
+                    "role": UserProfile.Roles.ADMIN,
+                    "status": UserProfile.Status.ACTIVE,
+                }
             )
-            .select_related("profile")
-            .order_by("id")
-        )
-        payload = [
-            {
-                "id": user.id,
-                "email": user.email,
-                "first_name": user.first_name,
-                "last_name": user.last_name,
-                "role": UserProfile.Roles.ADMIN,
-                "status": UserProfile.Status.ACTIVE,
-            }
-            for user in admins
-        ]
         return api_response(
             True,
             "Admin users fetched.",
@@ -2391,6 +2867,47 @@ class AdminOverviewAPIView(APIView):
         return api_response(True, "Admin overview fetched.", status.HTTP_200_OK, data)
 
 
+@extend_schema(tags=["Admin APIs"], responses={200: OpenApiTypes.OBJECT})
+class AdminAIHealthAPIView(APIView):
+    """
+    Admin-only: verify connectivity to the local/LAN Ollama server (GET /api/tags).
+    Configure OLLAMA_BASE_URL and OLLAMA_MODEL in pms/.env.
+    """
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+        cfg = get_ollama_settings()
+        try:
+            health = ollama_health(
+                base_url=str(cfg["base_url"]),
+                timeout=min(int(cfg["timeout"]), 30),
+            )
+        except OllamaClientError as e:
+            return api_response(
+                False,
+                str(e) or "Ollama is not reachable.",
+                status.HTTP_502_BAD_GATEWAY,
+                {
+                    "base_url": cfg["base_url"],
+                    "configured_model": cfg["model"],
+                    "reachable": False,
+                },
+            )
+        if not health.get("model_available"):
+            return api_response(
+                False,
+                f"Model {cfg['model']!r} is not available on Ollama. Run: ollama pull {cfg['model']}",
+                status.HTTP_502_BAD_GATEWAY,
+                health,
+            )
+        return api_response(
+            True,
+            "Ollama is connected.",
+            status.HTTP_200_OK,
+            health,
+        )
+
+
 @extend_schema(
     tags=["Admin APIs"],
     request=AdminAIAskSerializer,
@@ -2439,15 +2956,16 @@ class AdminAIAskAPIView(APIView):
             "If the question could refer to more than one project in the data, list the short options and ask which one they mean."
         )
         user_msg = f"Data snapshot (JSON, read-only):\n{context_text}\n\nAdmin question: {question}"
+        cfg = get_ollama_settings()
         try:
             answer = ollama_chat(
                 [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user_msg},
                 ],
-                base_url=getattr(settings, "OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-                model=getattr(settings, "OLLAMA_MODEL", "gemma4:e2b"),
-                timeout=int(getattr(settings, "OLLAMA_TIMEOUT", 120)),
+                base_url=str(cfg["base_url"]),
+                model=str(cfg["model"]),
+                timeout=int(cfg["timeout"]),
             )
         except OllamaClientError as e:
             logger.exception("Ollama request failed: %s", e)
@@ -2470,7 +2988,8 @@ class AdminAIAskAPIView(APIView):
             status.HTTP_200_OK,
             {
                 "answer": answer,
-                "model": getattr(settings, "OLLAMA_MODEL", "gemma4:e2b"),
+                "model": cfg["model"],
+                "ollama_base_url": cfg["base_url"],
             },
         )
 
