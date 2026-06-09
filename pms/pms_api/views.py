@@ -84,7 +84,10 @@ FIRST_LOGIN_TOKEN_TTL_SECONDS = 24 * 60 * 60
 
 
 def _stop_timers_before_complete(task, actor):
-    if user_role(actor) == UserProfile.Roles.EMPLOYEE:
+    if (
+        user_role(actor) == UserProfile.Roles.EMPLOYEE
+        or task.assigned_to_id == actor.id
+    ):
         stop_open_timers_for_task(task, user=actor)
     else:
         stop_open_timers_for_task(task)
@@ -1722,6 +1725,16 @@ class TaskViewSet(viewsets.ModelViewSet):
         if not assignee_profile or assignee_profile.status != UserProfile.Status.ACTIVE:
             raise ValidationError({"assigned_to": "Assigned user must be active."})
 
+    def _can_manage_assigned_task_timer(self, user, task):
+        """Assigned Employee, Admin, or BA may start/pause/stop their own task timer."""
+        if task.assigned_to_id != user.id:
+            return False
+        return user_role(user) in {
+            UserProfile.Roles.EMPLOYEE,
+            UserProfile.Roles.ADMIN,
+            UserProfile.Roles.BA,
+        }
+
     def _validate_project_milestone_scope(self, project, milestone):
         actor = self.request.user
         actor_role = user_role(actor)
@@ -1954,8 +1967,12 @@ class TaskViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def start(self, request, pk=None):
         task = self.get_object()
-        if user_role(request.user) != UserProfile.Roles.EMPLOYEE or task.assigned_to_id != request.user.id:
-            return api_response(False, "Only assigned employee can start this task.", status.HTTP_403_FORBIDDEN)
+        if not self._can_manage_assigned_task_timer(request.user, task):
+            return api_response(
+                False,
+                "Only the assigned user can start this task.",
+                status.HTTP_403_FORBIDDEN,
+            )
         if TimeLog.objects.filter(user=request.user, end_time__isnull=True).exists():
             return api_response(False, "You already have an active timer.", status.HTTP_400_BAD_REQUEST)
         now = timezone.now()
@@ -1973,6 +1990,12 @@ class TaskViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def pause(self, request, pk=None):
         task = self.get_object()
+        if not self._can_manage_assigned_task_timer(request.user, task):
+            return api_response(
+                False,
+                "Only the assigned user can pause this task.",
+                status.HTTP_403_FORBIDDEN,
+            )
         log = TimeLog.objects.filter(task=task, user=request.user, end_time__isnull=True).last()
         if not log:
             return api_response(False, "No active timer found for this task.", status.HTTP_400_BAD_REQUEST)
@@ -1987,6 +2010,12 @@ class TaskViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def stop(self, request, pk=None):
         task = self.get_object()
+        if not self._can_manage_assigned_task_timer(request.user, task):
+            return api_response(
+                False,
+                "Only the assigned user can stop this task.",
+                status.HTTP_403_FORBIDDEN,
+            )
         log = TimeLog.objects.filter(task=task, user=request.user, end_time__isnull=True).last()
         if not log:
             return api_response(False, "No active timer found for this task.", status.HTTP_400_BAD_REQUEST)
