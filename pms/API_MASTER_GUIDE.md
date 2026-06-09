@@ -166,9 +166,9 @@ Rules:
 
 Assignment rules:
 - Admin can assign to BA or Employee.
-- BA can assign only to Employee.
-- For BA, selected project/milestone must be Admin-owned or BA-owned.
-- Milestone must belong to selected project.
+- BA can assign to Admin or Employee.
+- For BA, project and milestone are optional; when provided, they must be Admin-owned or BA-owned.
+- Milestone must belong to selected project when both are set.
 
 ### Employee time tracking APIs
 - `POST /tasks/{id}/start/`

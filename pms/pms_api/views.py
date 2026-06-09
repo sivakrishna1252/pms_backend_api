@@ -1709,7 +1709,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         if actor_role == UserProfile.Roles.ADMIN:
             return {UserProfile.Roles.BA, UserProfile.Roles.EMPLOYEE}
         if actor_role == UserProfile.Roles.BA:
-            return {UserProfile.Roles.EMPLOYEE}
+            return {UserProfile.Roles.ADMIN, UserProfile.Roles.EMPLOYEE}
         return set()
 
     def _validate_assignee(self, assignee):
@@ -1810,7 +1810,8 @@ class TaskViewSet(viewsets.ModelViewSet):
         self._reset_mail_state()
         project = serializer.validated_data.get("project")
         milestone = serializer.validated_data.get("milestone")
-        if not project:
+        actor_role = user_role(self.request.user)
+        if not project and actor_role == UserProfile.Roles.ADMIN:
             raise ValidationError({"project": "Project is required."})
         self._validate_project_milestone_scope(project, milestone)
         self._validate_assignee(serializer.validated_data.get("assigned_to"))

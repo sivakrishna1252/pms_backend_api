@@ -353,8 +353,8 @@ Body:
 ```
 Assignment rules:
 - Admin can assign task directly to BA or Employee using `assigned_to`.
-- BA can assign task only to Employee.
-- For BA, selected `project`/`milestone` must be BA-owned or Admin-owned, and milestone must belong to selected project.
+- BA can assign task to Admin or Employee.
+- For BA, `project` and `milestone` are optional; when provided, they must be BA-owned or Admin-owned, and milestone must belong to selected project.
 
 ### GET `/tasks/`
 Pagination query params:
@@ -383,7 +383,7 @@ Body:
 ```
 Assignment rules:
 - Admin can assign/reassign to BA or Employee.
-- BA can assign/reassign only to Employee.
+- BA can assign/reassign to Admin or Employee.
 
 ### PATCH `/tasks/{id}/status`
 Body:
