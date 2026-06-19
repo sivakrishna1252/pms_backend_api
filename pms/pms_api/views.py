@@ -25,12 +25,19 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 
 
+from .ai_employee_insights import (
+    try_employee_performance_reply,
+    try_employee_period_report_reply,
+    try_employee_task_count_reply,
+)
 from .ai_prompts import (
     READ_ONLY_REFUSAL,
     build_system_prompt,
     build_user_message,
     is_attendance_question,
     is_write_intent,
+    try_greeting_reply,
+    try_self_identity_reply,
     try_yesterday_attendance_reply,
 )
 from .ai_readonly_context import build_readonly_context_payload, build_readonly_context_text
@@ -3052,7 +3059,34 @@ class AdminAIAskAPIView(APIView):
             milestone_id=milestone_id,
             task_id=task_id,
             question=question,
+            asking_user=request.user,
         )
+
+        greeting_reply = try_greeting_reply(question, context_payload)
+        if greeting_reply:
+            return api_response(
+                True,
+                "Greeting.",
+                status.HTTP_200_OK,
+                {
+                    "answer": greeting_reply,
+                    "model": "greeting",
+                    "provider": get_ai_provider(),
+                },
+            )
+
+        self_reply = try_self_identity_reply(question, context_payload)
+        if self_reply:
+            return api_response(
+                True,
+                "Self identity answer.",
+                status.HTTP_200_OK,
+                {
+                    "answer": self_reply,
+                    "model": "self-identity",
+                    "provider": get_ai_provider(),
+                },
+            )
 
         role_reply = try_role_count_reply(question, context_payload)
         if role_reply:
@@ -3076,6 +3110,45 @@ class AdminAIAskAPIView(APIView):
                 {
                     "answer": yesterday_reply,
                     "model": "attendance-yesterday",
+                    "provider": get_ai_provider(),
+                },
+            )
+
+        task_count_reply = try_employee_task_count_reply(question, context_payload)
+        if task_count_reply:
+            return api_response(
+                True,
+                "Employee task count answer.",
+                status.HTTP_200_OK,
+                {
+                    "answer": task_count_reply,
+                    "model": "employee-tasks",
+                    "provider": get_ai_provider(),
+                },
+            )
+
+        performance_reply = try_employee_performance_reply(question, context_payload)
+        if performance_reply:
+            return api_response(
+                True,
+                "Employee performance answer.",
+                status.HTTP_200_OK,
+                {
+                    "answer": performance_reply,
+                    "model": "employee-performance",
+                    "provider": get_ai_provider(),
+                },
+            )
+
+        period_report_reply = try_employee_period_report_reply(question, context_payload)
+        if period_report_reply:
+            return api_response(
+                True,
+                "Employee period report.",
+                status.HTTP_200_OK,
+                {
+                    "answer": period_report_reply,
+                    "model": "employee-period-report",
                     "provider": get_ai_provider(),
                 },
             )

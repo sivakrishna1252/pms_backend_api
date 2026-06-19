@@ -8,7 +8,7 @@ from typing import Any
 
 from django.contrib.auth import get_user_model
 
-from pms_api.models import Task, UserProfile
+from pms_api.models import Task, UserProfile, humanize_duration
 
 _STOPWORDS = frozenset(
     """
@@ -97,6 +97,24 @@ def build_portal_user_counts() -> dict[str, Any]:
         "ba_users": [_row(u) for u in bas[:20]],
         "employee_users_sample": [_row(u) for u in employees[:20]],
         "note": "Counts match User Management in the portal (active users, excluding Django staff/superuser accounts).",
+    }
+
+
+def build_asking_admin_context(user) -> dict[str, Any]:
+    """Logged-in admin who sent the chat message — used for 'my name', 'who am I', etc."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return {}
+    profile = getattr(user, "profile", None)
+    return {
+        "id": user.id,
+        "full_name": _display_name(user.first_name or "", user.last_name or "", user.email or ""),
+        "first_name": user.first_name or "",
+        "last_name": user.last_name or "",
+        "email": user.email or "",
+        "role": getattr(profile, "role", None) or "",
+        "role_label": _role_label(getattr(profile, "role", None) or ""),
+        "department": getattr(profile, "department", None) or "",
+        "note": "This is the admin who is logged in and asking the question. 'My' / 'me' refers to this person.",
     }
 
 
@@ -265,7 +283,9 @@ def is_intentional_multi_person(question: str, matches: list[dict[str, Any]]) ->
 
 
 def find_people_in_question(question: str, staff: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    if is_role_count_question(question):
+    from pms_api.ai_prompts import is_self_referential_question
+
+    if is_role_count_question(question) or is_self_referential_question(question):
         return []
 
     staff = staff if staff is not None else load_staff_directory()
@@ -300,8 +320,34 @@ def _tasks_for_user(tasks: list[dict[str, Any]], user_id: int) -> list[dict[str,
     return [t for t in tasks if t.get("assigned_to_id") == uid]
 
 
+def fetch_assigned_tasks_for_user(user_id: int) -> list[dict[str, Any]]:
+    """Full assigned-task list from DB — not limited by AI snapshot truncation."""
+    rows = (
+        Task.objects.filter(assigned_to_id=user_id)
+        .select_related("project", "milestone", "assigned_to")
+        .order_by("-updated_at")
+    )
+    result: list[dict[str, Any]] = []
+    for task in rows:
+        result.append(
+            {
+                "id": task.id,
+                "title": task.title,
+                "project_id": task.project_id,
+                "project_name": task.project.name if task.project else None,
+                "milestone_id": task.milestone_id,
+                "status": task.status,
+                "deadline": task.deadline,
+                "assigned_to_id": task.assigned_to_id,
+                "total_time_spent_seconds": task.total_time_spent_seconds,
+                "total_time_spent_display": humanize_duration(task.total_time_spent_seconds),
+            }
+        )
+    return result
+
+
 def _summarize_user_tasks(tasks: list[dict[str, Any]]) -> dict[str, Any]:
-    pool = [t for t in tasks if t.get("assigned_to_id") is not None]
+    pool = list(tasks)
     counts = {
         "total_assigned": len(pool),
         "delayed": sum(1 for t in pool if t.get("status") == Task.Status.DELAYED),
@@ -311,10 +357,28 @@ def _summarize_user_tasks(tasks: list[dict[str, Any]]) -> dict[str, Any]:
         "not_started": sum(1 for t in pool if t.get("status") == Task.Status.NOT_STARTED),
         "paused": sum(1 for t in pool if t.get("status") == Task.Status.PAUSED),
     }
+
+    def _titles(status: str) -> list[str]:
+        return [t.get("title") for t in pool if t.get("status") == status and t.get("title")]
+
     return {
         **counts,
-        "delayed_task_titles": [t.get("title") for t in pool if t.get("status") == Task.Status.DELAYED][:10],
-        "in_progress_task_titles": [t.get("title") for t in pool if t.get("status") == Task.Status.IN_PROGRESS][:10],
+        "delayed_task_titles": _titles(Task.Status.DELAYED),
+        "blocked_task_titles": _titles(Task.Status.BLOCKED),
+        "in_progress_task_titles": _titles(Task.Status.IN_PROGRESS),
+        "completed_task_titles": _titles(Task.Status.COMPLETED),
+        "not_started_task_titles": _titles(Task.Status.NOT_STARTED),
+        "paused_task_titles": _titles(Task.Status.PAUSED),
+        "assigned_tasks": [
+            {
+                "title": t.get("title"),
+                "status": t.get("status"),
+                "project_name": t.get("project_name"),
+                "deadline": t.get("deadline"),
+                "time_spent": t.get("total_time_spent_display"),
+            }
+            for t in pool
+        ],
     }
 
 
@@ -364,6 +428,8 @@ def _person_context_row(person: dict[str, Any]) -> dict[str, Any]:
 
 
 def enrich_payload_for_question(question: str, payload: dict[str, Any]) -> dict[str, Any]:
+    from pms_api.ai_prompts import is_self_referential_question
+
     payload["portal_user_counts"] = build_portal_user_counts()
     staff = load_staff_directory()
     payload["staff_directory"] = [
@@ -377,8 +443,37 @@ def enrich_payload_for_question(question: str, payload: dict[str, Any]) -> dict[
         for p in staff[:120]
     ]
 
+    def _user_tasks(user_id: int) -> list[dict[str, Any]]:
+        return fetch_assigned_tasks_for_user(user_id)
+
+    if is_self_referential_question(question):
+        asking = payload.get("asking_admin") or {}
+        if asking.get("id"):
+            user_tasks = _user_tasks(asking["id"])
+            payload["name_resolution"] = {
+                "people_detected_in_question": 1,
+                "self_referential": True,
+                "tolerates_spelling_mistakes": True,
+            }
+            payload["question_user_context"] = {
+                "matched_person": {
+                    "id": asking["id"],
+                    "full_name": asking["full_name"],
+                    "role": asking.get("role_label") or asking.get("role"),
+                    "email": asking.get("email"),
+                    "department": asking.get("department"),
+                    "match_confidence": 1.0,
+                    "is_asking_admin": True,
+                },
+                "assigned_task_summary": _summarize_user_tasks(user_tasks),
+                "instruction": (
+                    f"The admin is asking about THEMSELVES ({asking['full_name']}). "
+                    "Answer using asking_admin and assigned_task_summary — do not search staff_directory."
+                ),
+            }
+        return payload
+
     matches = find_people_in_question(question, staff)
-    tasks = payload.get("tasks") or []
     payload["name_resolution"] = {
         "people_detected_in_question": len(matches),
         "tolerates_spelling_mistakes": True,
@@ -390,23 +485,34 @@ def enrich_payload_for_question(question: str, payload: dict[str, Any]) -> dict[
 
     if len(matches) == 1:
         person = matches[0]
-        user_tasks = _tasks_for_user(tasks, person["id"])
+        user_tasks = _user_tasks(person["id"])
         assigned_summary = _summarize_user_tasks(user_tasks)
+        from pms_api.ai_employee_insights import (
+            attach_report_period_to_context,
+            build_employee_work_brief,
+            parse_report_period,
+        )
+
+        period = parse_report_period(question)
+        work_brief = build_employee_work_brief(person["id"], period=period)
         payload["question_user_context"] = {
             "matched_person": {
                 **_person_context_row(person),
             },
             "assigned_task_summary": assigned_summary,
+            "employee_work_brief": work_brief,
             "instruction": (
                 f"The admin question is about {person['full_name']}. "
-                "Use assigned_task_summary for their delayed/blocked/in-progress task counts. "
-                "Answer in plain English with their name."
+                f"Report period: {work_brief['period']['label']}. "
+                "Use employee_work_brief ONLY — list ALL assigned_tasks. "
+                "Never invent tasks, dates, or ratings."
             ),
         }
+        attach_report_period_to_context(question, payload)
     elif len(matches) > 1 and is_intentional_multi_person(question, matches):
         matched_people = []
         for person in matches[:6]:
-            user_tasks = _tasks_for_user(tasks, person["id"])
+            user_tasks = _user_tasks(person["id"])
             matched_people.append(
                 {
                     **_person_context_row(person),
@@ -425,7 +531,7 @@ def enrich_payload_for_question(question: str, payload: dict[str, Any]) -> dict[
     elif len(matches) > 1:
         candidates = []
         for person in matches[:6]:
-            user_tasks = _tasks_for_user(tasks, person["id"])
+            user_tasks = _user_tasks(person["id"])
             candidates.append(
                 {
                     **_person_context_row(person),

@@ -206,10 +206,11 @@ def _compact_payload_for_model(payload: dict[str, Any]) -> dict[str, Any]:
         "attendance_ai_briefing": attendance_briefing,
         "attendance_data_available": attendance_available,
         "staff_directory": payload.get("staff_directory"),
+        "asking_admin": payload.get("asking_admin"),
         "question_user_context": payload.get("question_user_context"),
         "name_resolution": payload.get("name_resolution"),
         "portal_user_counts": payload.get("portal_user_counts"),
-        "_note": "Snapshot was large; PMS task list trimmed. Attendance and user context kept.",
+        "_note": "Snapshot was large; global task list trimmed. Matched employee task lists in question_user_context are complete.",
     }
 
 
@@ -218,11 +219,16 @@ def build_readonly_context_payload(
     milestone_id=None,
     task_id=None,
     question: str | None = None,
+    asking_user=None,
 ) -> dict[str, Any]:
     """
     Read-only ORM-based snapshot (via existing admin overview builder) plus AI briefing. No writes.
     """
-    from pms_api.ai_user_resolution import build_portal_user_counts, enrich_payload_for_question
+    from pms_api.ai_user_resolution import (
+        build_asking_admin_context,
+        build_portal_user_counts,
+        enrich_payload_for_question,
+    )
     from pms_api.views import build_admin_overview_payload
 
     payload: dict[str, Any] = build_admin_overview_payload(
@@ -240,6 +246,9 @@ def build_readonly_context_payload(
     payload["ai_briefing"] = _build_ai_briefing(payload)
     payload["portal_user_counts"] = build_portal_user_counts()
     _merge_attendance_into_payload(payload)
+
+    if asking_user is not None:
+        payload["asking_admin"] = build_asking_admin_context(asking_user)
 
     if question:
         enrich_payload_for_question(question, payload)
