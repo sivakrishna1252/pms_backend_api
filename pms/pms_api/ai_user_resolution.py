@@ -199,6 +199,71 @@ def _question_phrases(question: str) -> list[str]:
     return phrases
 
 
+def _name_tokens(question: str) -> list[str]:
+    """Likely name tokens from the question (stopwords and role labels excluded)."""
+    norm = _normalize(question)
+    return [
+        w
+        for w in norm.split()
+        if w and w not in _STOPWORDS and w not in _ROLE_NAME_TOKENS and len(w) >= 2
+    ]
+
+
+def _first_name_token(person: dict[str, Any]) -> str:
+    first = _normalize(person.get("first_name") or "")
+    if first:
+        return first
+    parts = _normalize(person.get("full_name") or "").split()
+    return parts[0] if parts else ""
+
+
+def _token_matches_person(token: str, person: dict[str, Any]) -> bool:
+    if not token or len(token) < 2:
+        return False
+    first = _first_name_token(person)
+    last = _normalize(person.get("last_name") or "")
+    full = _normalize(person.get("full_name") or "")
+
+    if first and len(first) >= 3 and token == first:
+        return True
+    if last and len(last) >= 3 and token == last:
+        return True
+    if full and token in full.split():
+        return True
+    if first and len(first) >= 3 and len(token) >= 3:
+        if difflib.SequenceMatcher(None, first, token).ratio() >= 0.78:
+            return True
+    if full and len(token) >= 4 and difflib.SequenceMatcher(None, full.replace(" ", ""), token).ratio() >= 0.85:
+        return True
+    return _name_similarity(person, token) >= 0.75
+
+
+def is_intentional_multi_person(question: str, matches: list[dict[str, Any]]) -> bool:
+    """
+    True when the admin named multiple distinct people (e.g. "pratika and siva"),
+    not when one vague name matches several staff records (e.g. two different Johns).
+    """
+    if len(matches) < 2:
+        return False
+
+    tokens = _name_tokens(question)
+    if not tokens:
+        return False
+
+    used_tokens: set[str] = set()
+    matched_people = 0
+    for person in matches:
+        for token in tokens:
+            if token in used_tokens:
+                continue
+            if _token_matches_person(token, person):
+                used_tokens.add(token)
+                matched_people += 1
+                break
+
+    return matched_people >= 2 and matched_people == len(matches)
+
+
 def find_people_in_question(question: str, staff: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     if is_role_count_question(question):
         return []
@@ -214,7 +279,7 @@ def find_people_in_question(question: str, staff: list[dict[str, Any]] | None = 
             if person_id is None:
                 continue
             score = _name_similarity(person, phrase)
-            if score < 0.62:
+            if score < 0.58:
                 continue
             prev = best_by_id.get(person_id)
             if not prev or score > prev["match_score"]:
@@ -226,7 +291,7 @@ def find_people_in_question(question: str, staff: list[dict[str, Any]] | None = 
     )
     if len(matches) > 1:
         top = matches[0]["match_score"]
-        matches = [m for m in matches if m["match_score"] >= max(0.62, top - 0.12)]
+        matches = [m for m in matches if m["match_score"] >= max(0.58, top - 0.12)]
     return matches
 
 
@@ -255,7 +320,7 @@ def _summarize_user_tasks(tasks: list[dict[str, Any]]) -> dict[str, Any]:
 
 def format_disambiguation_reply(question: str, matches: list[dict[str, Any]]) -> str:
     lines = [
-        f"I found {len(matches)} people that may match what you asked about. Which one do you mean?",
+        f"I found {len(matches)} people with a similar name. Which one did you mean?",
         "",
     ]
     for idx, person in enumerate(matches[:6], start=1):
@@ -264,11 +329,12 @@ def format_disambiguation_reply(question: str, matches: list[dict[str, Any]]) ->
         lines.append(
             f"{idx}. {person.get('full_name', 'Unknown')} — {role}{dept} ({person.get('email') or 'no email'})"
         )
+    example_name = matches[0]["full_name"]
     lines.extend(
         [
             "",
-            "Please ask again with the full name, for example:",
-            f'"{question.strip()} for {matches[0]["full_name"]}"',
+            "Please ask again using the full name, for example:",
+            f'"What is the update for {example_name} this week?"',
         ]
     )
     return "\n".join(lines)
@@ -281,7 +347,20 @@ def try_disambiguation_reply(question: str, payload: dict[str, Any]) -> str | No
     matches = find_people_in_question(question, load_staff_directory())
     if len(matches) <= 1:
         return None
+    if is_intentional_multi_person(question, matches):
+        return None
     return format_disambiguation_reply(question, matches)
+
+
+def _person_context_row(person: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": person["id"],
+        "full_name": person["full_name"],
+        "role": person["role_label"],
+        "email": person["email"],
+        "department": person["department"],
+        "match_confidence": person.get("match_score"),
+    }
 
 
 def enrich_payload_for_question(question: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -303,6 +382,10 @@ def enrich_payload_for_question(question: str, payload: dict[str, Any]) -> dict[
     payload["name_resolution"] = {
         "people_detected_in_question": len(matches),
         "tolerates_spelling_mistakes": True,
+        "note": (
+            "Admin may misspell names. Match question tokens to staff_directory "
+            "with fuzzy similarity before asking for clarification."
+        ),
     }
 
     if len(matches) == 1:
@@ -311,12 +394,7 @@ def enrich_payload_for_question(question: str, payload: dict[str, Any]) -> dict[
         assigned_summary = _summarize_user_tasks(user_tasks)
         payload["question_user_context"] = {
             "matched_person": {
-                "id": person["id"],
-                "full_name": person["full_name"],
-                "role": person["role_label"],
-                "email": person["email"],
-                "department": person["department"],
-                "match_confidence": person["match_score"],
+                **_person_context_row(person),
             },
             "assigned_task_summary": assigned_summary,
             "instruction": (
@@ -325,18 +403,43 @@ def enrich_payload_for_question(question: str, payload: dict[str, Any]) -> dict[
                 "Answer in plain English with their name."
             ),
         }
-    elif len(matches) > 1:
-        payload["question_user_context"] = {
-            "ambiguous_people": [
+    elif len(matches) > 1 and is_intentional_multi_person(question, matches):
+        matched_people = []
+        for person in matches[:6]:
+            user_tasks = _tasks_for_user(tasks, person["id"])
+            matched_people.append(
                 {
-                    "id": m["id"],
-                    "full_name": m["full_name"],
-                    "role": m["role_label"],
-                    "email": m["email"],
+                    **_person_context_row(person),
+                    "assigned_task_summary": _summarize_user_tasks(user_tasks),
                 }
-                for m in matches[:6]
-            ],
-            "instruction": "Multiple people match — ask the admin which person they mean and show roles.",
+            )
+        names = ", ".join(p["full_name"] for p in matched_people)
+        payload["question_user_context"] = {
+            "matched_people": matched_people,
+            "instruction": (
+                f"The admin asked about multiple people: {names}. "
+                "Answer for EACH person separately using their assigned_task_summary and attendance data if relevant. "
+                "Use headings or bullet points per person."
+            ),
+        }
+    elif len(matches) > 1:
+        candidates = []
+        for person in matches[:6]:
+            user_tasks = _tasks_for_user(tasks, person["id"])
+            candidates.append(
+                {
+                    **_person_context_row(person),
+                    "assigned_task_summary": _summarize_user_tasks(user_tasks),
+                }
+            )
+        payload["question_user_context"] = {
+            "ambiguous_people": candidates,
+            "instruction": (
+                "Several staff match one unclear name in the question. "
+                "If you cannot tell which person the admin meant from context, list each candidate "
+                "(full name, role, email) and ask which one they mean. "
+                "If the admin named multiple distinct people or a comparison, answer for each using assigned_task_summary."
+            ),
         }
 
     return payload

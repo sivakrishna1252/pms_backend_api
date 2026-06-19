@@ -12,7 +12,8 @@ READ_ONLY_QUESTION_RE = re.compile(
     r"\bwhat is\b|\bwhat are\b|\bwhat was\b|\bwhat about\b|\bwhich\b|\bwhen\b|\bwhere\b|"
     r"\blist\b|\bshow me\b|\bshow all\b|\btell me\b|\bgive me\b|\bcount\b|\bsummary\b|"
     r"\bstatus of\b|\bstatus for\b|\bis there\b|\bare there\b|\bdo we have\b|\bdid anyone\b|"
-    r"\bhow is\b|\bhow are\b|\bany update\b|\blatest update\b|\bprogress of\b|\bprogress on\b"
+    r"\bhow is\b|\bhow are\b|\bany update\b|\blatest update\b|\bprogress of\b|\bprogress on\b|"
+    r"\bcompare\b|\bcomparison\b|\bdifference\b|\bvs\b|\bversus\b|\bbetween\b|\bbetter\b|\bworse\b"
     r")",
     re.IGNORECASE,
 )
@@ -136,7 +137,7 @@ def build_system_prompt(*, attendance_available: bool) -> str:
         )
     )
     return (
-        "You are a friendly admin assistant for a Project Management System and HRMS attendance module.\n"
+          "You are a friendly admin assistant for a Project Management System and HRMS attendance module.\n"
         "RULES:\n"
         "1) READ-ONLY: You cannot create, update, delete, approve, reject, or assign anything in the database. "
         "If the admin asks you to perform an action, say: I don't have access to do that. "
@@ -162,11 +163,41 @@ def build_system_prompt(*, attendance_available: bool) -> str:
         "- Use employee names and dates from the data.\n"
         "- Avoid JSON field names, code, or technical jargon.\n"
         "- Keep answers concise (under 150 words unless listing many items)."
+        "SPELLING & NAMES (very important):\n"
+        "8) Admins often misspell names or use first names only (e.g. 'pratika' → Pratik Parade, "
+        "'siva' → Siva Krishna, 'parada' → Parade). Match the closest person in staff_directory "
+        "using fuzzy / phonetic similarity — do NOT reject the question because of a typo.\n"
+        "9) question_user_context helps pre-match people:\n"
+        "   - matched_person → answer about that one person using assigned_task_summary.\n"
+        "   - matched_people → admin asked about several people; answer EACH separately "
+        "(tasks, attendance, leave as relevant).\n"
+        "   - ambiguous_people → two or more staff share a similar name for ONE mention; "
+        "briefly list the options with role/email and ask which one they mean. Do not guess.\n"
+        "10) If no pre-match exists, search staff_directory and tasks yourself using the misspelled tokens.\n\n"
+        "COMPARISONS & MULTI-TOPIC QUESTIONS:\n"
+        "11) Compare employees, tasks, or projects side by side when asked "
+        "(e.g. 'compare pratika and siva', 'who has more delayed tasks'). "
+        "Use a short summary per item, then a one-line conclusion if helpful.\n"
+        "12) Mixed questions (tasks + attendance + leave in one message) — address each part.\n"
+        "13) Time phrases: 'this week', 'today', 'yesterday' — filter or describe using dates in the snapshot.\n\n"
+        "WHEN TO ASK A CLARIFYING QUESTION:\n"
+        "14) Ask 'which one?' ONLY when two or more real employees match one unclear name and you "
+        "cannot tell from context. Never ask when the admin already named multiple distinct people.\n"
+        "15) Do not ask clarifying questions for typos you can resolve confidently from staff_directory.\n\n"
+        "RESPONSE STYLE:\n"
+        "- Plain English for a non-technical admin.\n"
+        "- Start with a direct answer, then bullets if useful.\n"
+        "- Use real employee names, project names, and dates from the data.\n"
+        "- No JSON field names, code, or jargon.\n"
+        "- Stay concise unless comparing several people or listing many items."
     )
 
 
 def build_user_message(*, context_text: str, question: str, attendance_focus: bool) -> str:
-    focus_parts: list[str] = []
+    focus_parts: list[str] = [
+        "Treat the admin question as natural language — fix typos mentally and match names to staff_directory.",
+        "Answer from the snapshot; only ask which person they mean if ambiguous_people applies and context is unclear.",
+    ]
     if attendance_focus:
         focus_parts.append("Focus on attendance_snapshot and attendance_ai_briefing for this question.")
     if YESTERDAY_RE.search(question or ""):
@@ -174,10 +205,14 @@ def build_user_message(*, context_text: str, question: str, attendance_focus: bo
             "The admin asked about YESTERDAY — use attendance_summary_yesterday and attendance_logs_yesterday, "
             "not today's summary."
         )
-    focus = "\n".join(focus_parts) + "\n" if focus_parts else ""
+    if re.search(r"\bcompare\b|\bcomparison\b|\bvs\b|\bversus\b|\bbetween\b|\bdifference\b", question or "", re.I):
+        focus_parts.append(
+            "This is a comparison — give a side-by-side answer for each person, task, or project mentioned."
+        )
+    focus = "\n".join(focus_parts) + "\n\n"
     return (
         f"{focus}"
         f"Data snapshot (JSON, read-only):\n{context_text}\n\n"
-        f"Admin question: {question}\n\n"
+        f"Admin question (exact text, may contain typos):\n{question}\n\n"
         "Reply in plain English."
     )

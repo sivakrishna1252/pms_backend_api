@@ -34,7 +34,7 @@ from .ai_prompts import (
     try_yesterday_attendance_reply,
 )
 from .ai_readonly_context import build_readonly_context_payload, build_readonly_context_text
-from .ai_user_resolution import try_disambiguation_reply, try_role_count_reply
+from .ai_user_resolution import try_role_count_reply
 from .models import (
     FileAttachment,
     Milestone,
@@ -3076,19 +3076,6 @@ class AdminAIAskAPIView(APIView):
                 {
                     "answer": yesterday_reply,
                     "model": "attendance-yesterday",
-                    "provider": get_ai_provider(),
-                },
-            )
-
-        disambiguation = try_disambiguation_reply(question, context_payload)
-        if disambiguation:
-            return api_response(
-                True,
-                "Please clarify which person you mean.",
-                status.HTTP_200_OK,
-                {
-                    "answer": disambiguation,
-                    "model": "name-resolution",
                     "provider": get_ai_provider(),
                 },
             )
