@@ -36,3 +36,11 @@ def is_valid_service_authorization(auth_header):
     if not supplied:
         return False
     return supplied in expected_service_tokens()
+
+
+def service_authorization_header():
+    """Bearer header for PMS → attendance internal API calls."""
+    tokens = expected_service_tokens()
+    if not tokens:
+        return None
+    return f"Bearer {tokens[0]}"

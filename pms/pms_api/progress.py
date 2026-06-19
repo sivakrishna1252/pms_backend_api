@@ -23,10 +23,10 @@ Rollup: weighted average by planned hours over tasks that have planned > 0.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, time as dt_time, timedelta
 from decimal import Decimal
 
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 from .models import Milestone, Project, Task, TimeLog
@@ -113,6 +113,31 @@ def effective_worked_seconds(task: Task, now=None) -> int:
     if base == 0:
         base = int(task.total_time_spent_seconds or 0)
     return base
+
+
+def worked_seconds_in_range(task: Task, range_start, range_end, now=None) -> int:
+    """Sum assignee TimeLog seconds overlapping inclusive calendar dates."""
+    now = now or timezone.now()
+    assignee_id = task.assigned_to_id
+    if not assignee_id or range_start is None or range_end is None:
+        return 0
+
+    window_start = timezone.make_aware(datetime.combine(range_start, dt_time.min))
+    window_end = timezone.make_aware(datetime.combine(range_end, dt_time.max))
+
+    logs = TimeLog.objects.filter(task_id=task.id, user_id=assignee_id).filter(
+        Q(start_time__lte=window_end)
+        & (Q(end_time__gte=window_start) | Q(end_time__isnull=True))
+    )
+
+    total = 0
+    for log in logs:
+        log_end = log.end_time or now
+        effective_start = max(log.start_time, window_start)
+        effective_end = min(log_end, window_end)
+        if effective_end > effective_start:
+            total += int((effective_end - effective_start).total_seconds())
+    return total
 
 
 def task_progress_percent(task: Task, now=None) -> float:

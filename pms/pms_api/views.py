@@ -11,6 +11,7 @@ from datetime import datetime, time, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import logging
 import hashlib
+import json
 import secrets
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiExample, extend_schema
@@ -24,7 +25,16 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 
 
-from .ai_readonly_context import build_readonly_context_text
+from .ai_prompts import (
+    READ_ONLY_REFUSAL,
+    build_system_prompt,
+    build_user_message,
+    is_attendance_question,
+    is_write_intent,
+    try_yesterday_attendance_reply,
+)
+from .ai_readonly_context import build_readonly_context_payload, build_readonly_context_text
+from .ai_user_resolution import try_disambiguation_reply, try_role_count_reply
 from .models import (
     FileAttachment,
     Milestone,
@@ -42,8 +52,14 @@ from .work_history_retention import (
     apply_work_history_retention,
     visible_completed_tasks_for_user,
 )
-from .ollama_client import OllamaClientError, get_ollama_settings, ollama_chat, ollama_health
-from .progress import milestone_progress_data, project_progress_data, work_tracking_progress_for_tasks
+from .llm_client import LLMClientError, get_ai_provider, llm_chat, llm_health
+from .sarvam_client import get_sarvam_settings
+from .progress import (
+    milestone_progress_data,
+    project_progress_data,
+    work_tracking_progress_for_tasks,
+    worked_seconds_in_range,
+)
 from .pagination import StandardResultsSetPagination
 from .permissions import IsAdmin, IsAdminOrBA, IsServiceToken, user_role
 from .serializers import (
@@ -1710,7 +1726,7 @@ class TaskViewSet(viewsets.ModelViewSet):
     def _allowed_assignee_roles(self):
         actor_role = user_role(self.request.user)
         if actor_role == UserProfile.Roles.ADMIN:
-            return {UserProfile.Roles.BA, UserProfile.Roles.EMPLOYEE}
+            return {UserProfile.Roles.ADMIN, UserProfile.Roles.BA, UserProfile.Roles.EMPLOYEE}
         if actor_role == UserProfile.Roles.BA:
             return {UserProfile.Roles.ADMIN, UserProfile.Roles.EMPLOYEE}
         return set()
@@ -2688,6 +2704,32 @@ class WorkTrackingAPIView(APIView):
         task_id = request.query_params.get("task_id")
         status_filter = request.query_params.get("status")
         only_active = request.query_params.get("only_active")
+        date_from_raw = request.query_params.get("date_from")
+        date_to_raw = request.query_params.get("date_to")
+
+        range_start = range_end = None
+        if date_from_raw or date_to_raw:
+            if not date_from_raw or not date_to_raw:
+                return api_response(
+                    False,
+                    "Both date_from and date_to are required for date filtering.",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                range_start = datetime.strptime(date_from_raw, "%Y-%m-%d").date()
+                range_end = datetime.strptime(date_to_raw, "%Y-%m-%d").date()
+            except ValueError:
+                return api_response(
+                    False,
+                    "date_from and date_to must be YYYY-MM-DD.",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+            if range_start > range_end:
+                return api_response(
+                    False,
+                    "date_from must be on or before date_to.",
+                    status.HTTP_400_BAD_REQUEST,
+                )
 
         # Employees only ever see their own assignments; ignore employee_id for others' data.
         if employee_id and role in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
@@ -2727,15 +2769,24 @@ class WorkTrackingAPIView(APIView):
                 if active_log.start_time.date() == today:
                     today_worked_seconds += current_session_seconds
 
-            completed_duration_sum = (
-                TimeLog.objects.filter(
-                    task=task,
-                    user=task.assigned_to,
-                    end_time__isnull=False,
-                ).aggregate(s=Sum("duration_seconds"))["s"]
-                or 0
-            )
-            total_tracked_seconds = int(completed_duration_sum) + int(current_session_seconds)
+            if range_start and range_end:
+                total_tracked_seconds = worked_seconds_in_range(
+                    task, range_start, range_end, now=now
+                )
+                if total_tracked_seconds <= 0:
+                    continue
+            else:
+                completed_duration_sum = (
+                    TimeLog.objects.filter(
+                        task=task,
+                        user=task.assigned_to,
+                        end_time__isnull=False,
+                    ).aggregate(s=Sum("duration_seconds"))["s"]
+                    or 0
+                )
+                total_tracked_seconds = int(completed_duration_sum) + int(
+                    current_session_seconds
+                )
 
             last_completed_log = (
                 TimeLog.objects.filter(task=task, user=task.assigned_to, end_time__isnull=False).order_by("-end_time").first()
@@ -2783,6 +2834,8 @@ class WorkTrackingAPIView(APIView):
                 "task_id": task_id,
                 "status": status_filter,
                 "only_active": only_active,
+                "date_from": date_from_raw,
+                "date_to": date_to_raw,
             },
             "summary": {
                 "records_count": len(records),
@@ -2900,39 +2953,50 @@ class AdminOverviewAPIView(APIView):
 @extend_schema(tags=["Admin APIs"], responses={200: OpenApiTypes.OBJECT})
 class AdminAIHealthAPIView(APIView):
     """
-    Admin-only: verify connectivity to the local/LAN Ollama server (GET /api/tags).
-    Configure OLLAMA_BASE_URL and OLLAMA_MODEL in pms/.env.
+    Admin-only: verify connectivity to the configured AI provider (Sarvam or Ollama).
+    Configure AI_PROVIDER and SARVAM_* or OLLAMA_* in pms/.env.
     """
     permission_classes = [IsAuthenticated, IsAdmin]
 
     def get(self, request):
-        cfg = get_ollama_settings()
+        provider = get_ai_provider()
         try:
-            health = ollama_health(
-                base_url=str(cfg["base_url"]),
-                timeout=min(int(cfg["timeout"]), 30),
+            health = llm_health()
+        except LLMClientError as e:
+            cfg = get_sarvam_settings() if provider == "sarvam" else {}
+            configured = bool(str(cfg.get("api_key", "")).strip()) if provider == "sarvam" else True
+            return api_response(
+                True if configured else False,
+                str(e) or "AI provider is not reachable.",
+                status.HTTP_200_OK if configured else status.HTTP_502_BAD_GATEWAY,
+                {
+                    "provider": provider,
+                    "reachable": False,
+                    "configured": configured,
+                    "base_url": cfg.get("base_url") if provider == "sarvam" else None,
+                    "configured_model": cfg.get("model") if provider == "sarvam" else None,
+                    "model_available": False,
+                    "network_error": True,
+                },
             )
-        except OllamaClientError as e:
+        if not health.get("configured", True):
             return api_response(
                 False,
-                str(e) or "Ollama is not reachable.",
+                health.get("message") or "AI provider is not configured.",
                 status.HTTP_502_BAD_GATEWAY,
-                {
-                    "base_url": cfg["base_url"],
-                    "configured_model": cfg["model"],
-                    "reachable": False,
-                },
+                health,
             )
         if not health.get("model_available"):
             return api_response(
                 False,
-                f"Model {cfg['model']!r} is not available on Ollama. Run: ollama pull {cfg['model']}",
+                f"Model {health.get('configured_model')!r} is not available.",
                 status.HTTP_502_BAD_GATEWAY,
                 health,
             )
+        label = "Sarvam" if provider == "sarvam" else "Ollama"
         return api_response(
             True,
-            "Ollama is connected.",
+            f"{label} is connected.",
             status.HTTP_200_OK,
             health,
         )
@@ -2952,8 +3016,8 @@ class AdminAIHealthAPIView(APIView):
 )
 class AdminAIAskAPIView(APIView):
     """
-    Admin-only: read-only DB snapshot (ORM) is sent to the local Ollama server; the model answers in plain English.
-    No create/update/delete. Configure OLLAMA_BASE_URL, OLLAMA_MODEL (default: gemma4:e2b) in the environment.
+    Admin-only: read-only DB snapshot (ORM) is sent to Sarvam/Ollama; the model answers in plain English.
+    No create/update/delete — answers only. Configure AI_PROVIDER and SARVAM_* in pms/.env.
     """
     permission_classes = [IsAuthenticated, IsAdmin]
 
@@ -2971,44 +3035,98 @@ class AdminAIAskAPIView(APIView):
         if task_id is not None and not Task.objects.filter(id=task_id).exists():
             return api_response(False, "Task not found.", status.HTTP_400_BAD_REQUEST, None)
 
-        context_text = build_readonly_context_text(
+        if is_write_intent(question):
+            return api_response(
+                True,
+                "Read-only assistant.",
+                status.HTTP_200_OK,
+                {
+                    "answer": READ_ONLY_REFUSAL,
+                    "model": "read-only-guard",
+                    "provider": get_ai_provider(),
+                },
+            )
+
+        context_payload = build_readonly_context_payload(
             project_id=project_id,
             milestone_id=milestone_id,
             task_id=task_id,
+            question=question,
         )
-        system = (
-            "You are an admin's project assistant. The JSON includes an object ai_briefing with per_project_briefing: "
-            "use it for a concise status report in plain English. Prefer naming people from people_assigned_to_tasks, "
-            "milestones in progress (milestones_in_progress_by_name), task counts (completed vs remaining_not_done), "
-            "and project deadline with days_until_project_deadline. "
-            "The full task and milestone lists add detail when needed. You do not have file/website content—only this data. "
-            "If something is not in the JSON, say so. Do not invent names, numbers, or dates. "
-            "If the question could refer to more than one project in the data, list the short options and ask which one they mean."
+
+        role_reply = try_role_count_reply(question, context_payload)
+        if role_reply:
+            return api_response(
+                True,
+                "Role count answer.",
+                status.HTTP_200_OK,
+                {
+                    "answer": role_reply,
+                    "model": "role-count",
+                    "provider": get_ai_provider(),
+                },
+            )
+
+        yesterday_reply = try_yesterday_attendance_reply(question, context_payload)
+        if yesterday_reply:
+            return api_response(
+                True,
+                "Yesterday attendance answer.",
+                status.HTTP_200_OK,
+                {
+                    "answer": yesterday_reply,
+                    "model": "attendance-yesterday",
+                    "provider": get_ai_provider(),
+                },
+            )
+
+        disambiguation = try_disambiguation_reply(question, context_payload)
+        if disambiguation:
+            return api_response(
+                True,
+                "Please clarify which person you mean.",
+                status.HTTP_200_OK,
+                {
+                    "answer": disambiguation,
+                    "model": "name-resolution",
+                    "provider": get_ai_provider(),
+                },
+            )
+
+        context_text = json.dumps(context_payload, default=str, ensure_ascii=False)
+        attendance_available = bool(context_payload.get("attendance_data_available"))
+        system = build_system_prompt(attendance_available=attendance_available)
+        user_msg = build_user_message(
+            context_text=context_text,
+            question=question,
+            attendance_focus=is_attendance_question(question),
         )
-        user_msg = f"Data snapshot (JSON, read-only):\n{context_text}\n\nAdmin question: {question}"
-        cfg = get_ollama_settings()
         try:
-            answer = ollama_chat(
+            answer, model, provider = llm_chat(
                 [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user_msg},
                 ],
-                base_url=str(cfg["base_url"]),
-                model=str(cfg["model"]),
-                timeout=int(cfg["timeout"]),
             )
-        except OllamaClientError as e:
-            logger.exception("Ollama request failed: %s", e)
+        except LLMClientError as e:
+            logger.exception("AI request failed (%s): %s", get_ai_provider(), e)
             return api_response(
                 False,
-                str(e) or "Ollama request failed.",
-                status.HTTP_502_BAD_GATEWAY,
-                None,
+                str(e) or "AI request failed.",
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                {
+                    "provider": get_ai_provider(),
+                    "hint": (
+                        "Sarvam cloud needs internet/DNS access to api.sarvam.ai. "
+                        "Set AI_FALLBACK_TO_OLLAMA=True and ensure Ollama is running, "
+                        "or fix network/DNS on this server."
+                    ),
+                },
             )
         if not answer:
             return api_response(
                 False,
-                "Ollama returned an empty response.",
+                "AI returned an empty response.",
                 status.HTTP_502_BAD_GATEWAY,
                 None,
             )
@@ -3018,8 +3136,8 @@ class AdminAIAskAPIView(APIView):
             status.HTTP_200_OK,
             {
                 "answer": answer,
-                "model": cfg["model"],
-                "ollama_base_url": cfg["base_url"],
+                "model": model,
+                "provider": provider,
             },
         )
 

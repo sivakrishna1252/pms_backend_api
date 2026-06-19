@@ -103,6 +103,13 @@ else:
         },
     }
 
+# Optional read-only bridge to attendance PostgreSQL (same host/credentials, different DB name).
+_attendance_db_name = os.getenv("ATTENDANCE_DB_NAME", "attendace_pms").strip()
+if _attendance_db_name and _db_url:
+    _att_cfg = DATABASES["default"].copy()
+    _att_cfg["NAME"] = _attendance_db_name
+    DATABASES["attendance"] = _att_cfg
+
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
@@ -192,7 +199,19 @@ FRONTEND_FIRST_LOGIN_URL = os.getenv(
     "http://nexus.aspune.cloud/auth/activate-account",
 )
 
-# Local Ollama (admin AI assistant) — use /api/chat; model must exist in `ollama list`
+# Admin AI assistant — read-only Q&A over DB snapshot (no create/update/delete)
+AI_PROVIDER = os.getenv("AI_PROVIDER", "sarvam").strip().lower()  # sarvam | ollama
+
+# When Sarvam cloud is unreachable (DNS/network), try local Ollama automatically.
+AI_FALLBACK_TO_OLLAMA = os.getenv("AI_FALLBACK_TO_OLLAMA", "True").lower() in {"1", "true", "yes", "on"}
+
+# Sarvam (cloud) — https://docs.sarvam.ai/api-reference-docs/chat/chat-completions
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
+SARVAM_MODEL = os.getenv("SARVAM_MODEL", "sarvam-30b")
+SARVAM_BASE_URL = os.getenv("SARVAM_BASE_URL", "https://api.sarvam.ai/v1")
+SARVAM_TIMEOUT = int(os.getenv("SARVAM_TIMEOUT", "120"))
+
+# Ollama (local fallback) — use /api/chat; model must exist in `ollama list`
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:e2b")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))
@@ -220,10 +239,14 @@ ADMIN_MAIL_RECIPIENTS = [
 
 PMS_SERVICE_TOKEN = os.getenv("PMS_SERVICE_TOKEN", "").strip()
 
-# Auto-stop active timers (server local timezone via Django timezone.localtime()).
-# First pass at cutoff (default 8:00 PM): stop long-running timers; defer sessions started within grace window.
-# Final pass at cutoff + grace (default 9:00 PM): stop all remaining active timers.
-# Schedule: run `send_deadline_notifications` at both times on weekdays (e.g. cron 0 20,21 * * 1-5).
+# PMS → attendance service (internal read APIs for admin AI)
+ATTENDANCE_API_BASE_URL = os.getenv("ATTENDANCE_API_BASE_URL", "http://127.0.0.1:6015").strip()
+
+# Auto-stop running task timers (server local timezone via Django timezone.localtime()).
+# Weekday schedule (Windows Task Scheduler / cron):
+#   20:00 — cd pms && python manage.py auto_stop_task_timers
+#   20:00 — cd attendance_service && python manage.py auto_checkout_8pm --pass first
+#   21:00 — cd attendance_service && python manage.py auto_checkout_8pm --pass final
+# Morning (optional): cd pms && python manage.py send_deadline_notifications
 AUTO_STOP_CUTOFF_HOUR = int(os.getenv("AUTO_STOP_CUTOFF_HOUR", "20"))
 AUTO_STOP_CUTOFF_MINUTE = int(os.getenv("AUTO_STOP_CUTOFF_MINUTE", "0"))
-AUTO_STOP_GRACE_HOURS = int(os.getenv("AUTO_STOP_GRACE_HOURS", "1"))

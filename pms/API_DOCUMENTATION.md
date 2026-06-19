@@ -580,26 +580,44 @@ Each dashboard response is role-based and returned in:
 
 ---
 
-## 11) Automated Deadline Mail Job
+## 11) Automated evening jobs
 
-Run this command daily (scheduler/cron):
+### Task timer auto-stop (8:00 PM, Mon–Fri)
 
 ```bash
+cd pms
+python manage.py auto_stop_task_timers
+```
+
+- Stops **all running** task timers (`TimeLog` with no `end_time`). **Paused tasks are never touched.**
+- Sets task status from `IN_PROGRESS` → `PAUSED`
+- Emails each employee: forgot to stop — do not forget again
+- Test anytime: `python manage.py auto_stop_task_timers --force`
+
+Settings: `AUTO_STOP_CUTOFF_HOUR` (20), `AUTO_STOP_CUTOFF_MINUTE` (0)
+
+### Attendance auto check-out (8:00 PM + 9:00 PM, Mon–Fri)
+
+```bash
+cd attendance_service
+python manage.py auto_checkout_8pm --pass first   # 8 PM
+python manage.py auto_checkout_8pm --pass final   # 9 PM
+```
+
+- **8 PM:** checkout if inactive **30+ minutes**; email employee; status **Half Day** if worked >5h (even if 8+ h)
+- **9 PM:** checkout **all** still checked in; email employee
+
+Windows helper: `scripts/run-evening-auto-stop.ps1 8pm` / `9pm`
+
+### Deadline alert emails (daily, e.g. morning)
+
+```bash
+cd pms
 python manage.py send_deadline_notifications
 ```
 
-What it does:
-- **Running timers only** (`TimeLog` with no `end_time`). **Paused tasks are never touched** (pause already closed the session).
-- **8:00 PM (first pass, Mon–Fri):** Auto-stops running timers where **last activity** was **not** near 8 PM (forgot to stop/pause). Sends email.
-- **8:00 PM deferral:** Running timers with **last activity within 1 hour of 8 PM** (start, or employee work-tracking refresh) are left running until 9 PM.
-- **9:00 PM (final pass):** Auto-stops **all** timers still running. Sends email.
-- Schedule twice on weekdays: `0 20,21 * * 1-5`
-- Settings: `AUTO_STOP_CUTOFF_HOUR` (20), `AUTO_STOP_CUTOFF_MINUTE` (0), `AUTO_STOP_GRACE_HOURS` (1)
-- Test: `python manage.py send_deadline_notifications --force-auto-stop`
-- Project due tomorrow and not completed -> mail to all active Admin + BA users
-- Project overdue and not completed -> status auto-set to `DELAYED` + mail to Admin + BA
-- Milestone overdue and not completed -> status auto-set to `DELAYED` + mail to milestone creator
-- Task overdue and not completed -> status auto-set to `DELAYED` + mail to task creator (typically BA/Admin)
+- Project due tomorrow and not completed → mail to Admin + BA
+- Project/milestone/task overdue → status `DELAYED` + mail to owners
 
 ---
 

@@ -1,4 +1,7 @@
+from datetime import date, datetime, timedelta
+
 from django.contrib.auth import authenticate
+from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.db import IntegrityError
@@ -684,6 +687,69 @@ class TaskSerializer(serializers.ModelSerializer):
 
         return assignee_timer_state(obj)
 
+    def _read_optional_name(self, key: str) -> str:
+        data = getattr(self, "initial_data", None) or {}
+        if hasattr(data, "get"):
+            raw = data.get(key, "")
+        else:
+            raw = ""
+        return str(raw or "").strip()
+
+    def _resolve_self_create_project_milestone(self, attrs, user):
+        project = attrs.get("project")
+        milestone = attrs.get("milestone")
+        project_name = self._read_optional_name("project_name")
+        milestone_name = self._read_optional_name("milestone_name")
+
+        deadline_val = attrs.get("deadline")
+        if isinstance(deadline_val, datetime):
+            task_deadline = deadline_val.date()
+        elif isinstance(deadline_val, date):
+            task_deadline = deadline_val
+        else:
+            task_deadline = None
+
+        if project is None and project_name:
+            project = Project.objects.filter(name__iexact=project_name).first()
+            if project is None:
+                start_date = timezone.localdate()
+                end_date = task_deadline or (start_date + timedelta(days=30))
+                if end_date < start_date:
+                    start_date = end_date
+                project = Project.objects.create(
+                    name=project_name,
+                    created_by=user,
+                    start_date=start_date,
+                    deadline=end_date,
+                    status=Project.Status.PLANNED,
+                )
+            attrs["project"] = project
+
+        if milestone is None and milestone_name:
+            if project is None:
+                raise serializers.ValidationError(
+                    {"project": "Project is required when specifying a milestone name."}
+                )
+            milestone = Milestone.objects.filter(
+                project=project,
+                name__iexact=milestone_name,
+            ).first()
+            if milestone is None:
+                start_date = project.start_date
+                end_date = task_deadline or project.deadline
+                if end_date < start_date:
+                    start_date = end_date
+                milestone = Milestone.objects.create(
+                    project=project,
+                    name=milestone_name,
+                    created_by=user,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            attrs["milestone"] = milestone
+
+        return attrs
+
     def validate(self, attrs):
         from datetime import date, datetime
 
@@ -722,6 +788,14 @@ class TaskSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"supervisor": "Select an Admin or BA to notify about this task."}
                 )
+            request = self.context.get("request")
+            user = getattr(request, "user", None)
+            if user and user.is_authenticated:
+                attrs = self._resolve_self_create_project_milestone(attrs, user)
+                project = attrs.get("project")
+                milestone = attrs.get("milestone")
+                project_id = _pk(project)
+                milestone_id = _pk(milestone)
             if milestone_id is not None and project_id is None:
                 raise serializers.ValidationError(
                     {"project": "Project is required when a milestone is selected."}
