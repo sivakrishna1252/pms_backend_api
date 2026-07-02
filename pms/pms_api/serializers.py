@@ -782,6 +782,23 @@ class TaskSerializer(serializers.ModelSerializer):
 
         request = self.context.get("request")
         actor_role = getattr(getattr(getattr(request, "user", None), "profile", None), "role", None)
+        if (
+            actor_role == UserProfile.Roles.EMPLOYEE
+            and instance is not None
+            and instance.is_self_created
+        ):
+            user = getattr(request, "user", None)
+            if user and user.is_authenticated:
+                attrs = self._resolve_self_create_project_milestone(attrs, user)
+                project = attrs.get("project")
+                milestone = attrs.get("milestone")
+                project_id = _pk(project)
+                milestone_id = _pk(milestone)
+            if milestone_id is not None and project_id is None:
+                raise serializers.ValidationError(
+                    {"project": "Project is required when a milestone is selected."}
+                )
+
         if actor_role == UserProfile.Roles.EMPLOYEE and instance is None:
             supervisor = attrs.get("supervisor")
             if not supervisor:

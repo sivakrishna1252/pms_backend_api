@@ -1,4 +1,4 @@
-"""Auto-stop all running task timers at 8 PM (weekdays) and email assignees."""
+"""Auto-stop all running task timers at 8 PM (Mon–Sat) and email assignees."""
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
@@ -10,7 +10,7 @@ from pms_api.views import _send_styled_email, _sync_parent_statuses_for_task
 
 class Command(BaseCommand):
     help = (
-        "Weekday 8 PM job: stop every running task timer (IN_PROGRESS), email assignees, "
+        "Mon–Sat 8 PM job: stop every running task timer, email assignees, "
         "and remind them not to forget again. Paused tasks are not touched."
     )
 
@@ -18,7 +18,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--force",
             action="store_true",
-            help="Run even outside the 8 PM window or on weekends (testing).",
+            help="Run even outside the 8 PM window or on Sunday (testing).",
         )
 
     def handle(self, *args, **options):
@@ -28,15 +28,16 @@ class Command(BaseCommand):
         cutoff_minute = int(getattr(settings, "AUTO_STOP_CUTOFF_MINUTE", 0))
 
         if not force:
-            if now_local.weekday() > 4:
-                self.stdout.write(self.style.WARNING("Skipped: weekend (Mon–Fri only)."))
+            if now_local.weekday() > 5:
+                self.stdout.write(self.style.WARNING("Skipped: Sunday (Mon–Sat only)."))
                 return
             if now_local.hour < cutoff_hour or (
                 now_local.hour == cutoff_hour and now_local.minute < cutoff_minute
             ):
                 self.stdout.write(
                     self.style.WARNING(
-                        f"Skipped: before {cutoff_hour:02d}:{cutoff_minute:02d} local time."
+                        f"Skipped: before {cutoff_hour:02d}:{cutoff_minute:02d} local time "
+                        f"({settings.TIME_ZONE})."
                     )
                 )
                 return
@@ -47,7 +48,11 @@ class Command(BaseCommand):
         )
 
         if not stopped_by_user:
-            self.stdout.write(self.style.SUCCESS("No running task timers to stop."))
+            self.stdout.write(
+                self.style.SUCCESS(
+                    "No running task timers at 8 PM — nothing to stop, no email sent."
+                )
+            )
             return
 
         cutoff_label = f"{cutoff_hour:02d}:{cutoff_minute:02d}"
@@ -74,6 +79,7 @@ class Command(BaseCommand):
         total = sum(len(p["tasks"]) for p in stopped_by_user.values())
         self.stdout.write(
             self.style.SUCCESS(
-                f"Auto-stopped {total} running timer(s) for {len(stopped_by_user)} employee(s)."
+                f"Auto-stopped {total} running timer(s) for {len(stopped_by_user)} employee(s). "
+                f"Notification email sent."
             )
         )

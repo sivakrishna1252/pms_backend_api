@@ -423,7 +423,7 @@ Body:
 Response includes `duration_seconds` and cumulative `total_time_spent_seconds`.
 
 ### GET `/tasks/{id}/time-logs/`
-Use this endpoint to check worked time history per task.
+Returns timer session history for Admin/BA. Start/pause/stop timeline entries before `TIMER_LOGS_VISIBLE_FROM` (or before today when unset) are excluded. **Working time totals elsewhere still include all tracked work.**
 
 ### Employee task lifecycle (recommended flow)
 1. Employee opens assigned task from `GET /my/tasks` or `GET /tasks/{id}/`
@@ -582,7 +582,7 @@ Each dashboard response is role-based and returned in:
 
 ## 11) Automated evening jobs
 
-### Task timer auto-stop (8:00 PM, Mon–Fri)
+### Task timer auto-stop (8:00 PM, Mon–Sat)
 
 ```bash
 cd pms
@@ -594,9 +594,18 @@ python manage.py auto_stop_task_timers
 - Emails each employee: forgot to stop — do not forget again
 - Test anytime: `python manage.py auto_stop_task_timers --force`
 
-Settings: `AUTO_STOP_CUTOFF_HOUR` (20), `AUTO_STOP_CUTOFF_MINUTE` (0)
+Settings: `TIME_ZONE` (default `Asia/Kolkata`), `AUTO_STOP_CUTOFF_HOUR` (20), `AUTO_STOP_CUTOFF_MINUTE` (0)
 
-### Attendance auto check-out (8:00 PM + 9:00 PM, Mon–Fri)
+**Production (Docker):** Jenkins runs `scripts/production/install-auto-stop-tasks-cron.sh` after deploy.
+
+```bash
+chmod +x scripts/production/*.sh
+PMS_CONTAINER=pms-web-prod scripts/production/install-auto-stop-tasks-cron.sh
+```
+
+Windows (local): `scripts/auto-stop-tasks.ps1` — use `-Register` once, `-Force` to test.
+
+### Attendance auto check-out (8:00 PM + 9:00 PM, Mon–Sat)
 
 ```bash
 cd attendance_service
@@ -607,7 +616,8 @@ python manage.py auto_checkout_8pm --pass final   # 9 PM
 - **8 PM:** checkout if inactive **30+ minutes**; email employee; status **Half Day** if worked >5h (even if 8+ h)
 - **9 PM:** checkout **all** still checked in; email employee
 
-Windows helper: `scripts/run-evening-auto-stop.ps1 8pm` / `9pm`
+Windows helper: `scripts/auto-stop-tasks.ps1` (`-Register` / `-Force`)  
+Linux production: `scripts/production/auto-stop-tasks.sh`
 
 ### Deadline alert emails (daily, e.g. morning)
 

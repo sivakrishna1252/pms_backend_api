@@ -11,7 +11,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import dj_database_url
@@ -135,7 +135,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = os.getenv("TIME_ZONE", "Asia/Kolkata")
 
 USE_I18N = True
 
@@ -161,7 +161,7 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_PAGINATION_CLASS": "pms_api.pagination.StandardResultsSetPagination",
-    "PAGE_SIZE": 10,
+    "PAGE_SIZE": 25,
 }
 
 SPECTACULAR_SETTINGS = {
@@ -242,11 +242,23 @@ PMS_SERVICE_TOKEN = os.getenv("PMS_SERVICE_TOKEN", "").strip()
 # PMS → attendance service (internal read APIs for admin AI)
 ATTENDANCE_API_BASE_URL = os.getenv("ATTENDANCE_API_BASE_URL", "http://127.0.0.1:6015").strip()
 
-# Auto-stop running task timers (server local timezone via Django timezone.localtime()).
-# Weekday schedule (Windows Task Scheduler / cron):
+# Auto-stop running task timers (Django TIME_ZONE via timezone.localtime()).
+# Weekday schedule (Windows Task Scheduler / cron), Mon–Sat:
 #   20:00 — cd pms && python manage.py auto_stop_task_timers
 #   20:00 — cd attendance_service && python manage.py auto_checkout_8pm --pass first
 #   21:00 — cd attendance_service && python manage.py auto_checkout_8pm --pass final
 # Morning (optional): cd pms && python manage.py send_deadline_notifications
 AUTO_STOP_CUTOFF_HOUR = int(os.getenv("AUTO_STOP_CUTOFF_HOUR", "20"))
 AUTO_STOP_CUTOFF_MINUTE = int(os.getenv("AUTO_STOP_CUTOFF_MINUTE", "0"))
+
+# Timer log history shown in Admin Tasks / work-tracking (YYYY-MM-DD, local TIME_ZONE).
+# Set once on deploy to the go-live date so pre-release sessions stay hidden.
+# When unset, only sessions from the current local day onward are shown.
+_timer_logs_visible_from_raw = os.getenv("TIMER_LOGS_VISIBLE_FROM", "").strip()
+if _timer_logs_visible_from_raw:
+    try:
+        TIMER_LOGS_VISIBLE_FROM = datetime.strptime(_timer_logs_visible_from_raw, "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError("TIMER_LOGS_VISIBLE_FROM must be YYYY-MM-DD when set.")
+else:
+    TIMER_LOGS_VISIBLE_FROM = None

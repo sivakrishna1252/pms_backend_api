@@ -54,6 +54,7 @@ from .models import (
     humanize_duration,
 )
 from .timer_state import assignee_timer_state, stop_open_timers_for_task
+from .timer_logs_visibility import assignee_time_logs_queryset
 from .work_history_retention import (
     WORK_HISTORY_RETENTION_MONTHS,
     apply_work_history_retention,
@@ -67,7 +68,7 @@ from .progress import (
     work_tracking_progress_for_tasks,
     worked_seconds_in_range,
 )
-from .pagination import StandardResultsSetPagination
+from .pagination import StandardResultsSetPagination, paginate_request, unpaginated_list_response
 from .permissions import IsAdmin, IsAdminOrBA, IsServiceToken, user_role
 from .serializers import (
     AdminAIAskSerializer,
@@ -1325,15 +1326,19 @@ class UserViewSet(viewsets.ModelViewSet):
             .select_related("profile")
             .order_by("first_name", "last_name", "id")
         )
+        page, paginator = paginate_request(request, users)
+        targets = page if page is not None else users
         payload = [
             {
                 "id": user.id,
                 "name": user.get_full_name().strip() or user.email,
                 "role": user.profile.role,
             }
-            for user in users
+            for user in targets
         ]
-        return api_response(True, "Supervisors fetched.", status.HTTP_200_OK, {"results": payload})
+        if paginator is not None:
+            return paginator.get_paginated_response(payload, message="Supervisors fetched.")
+        return unpaginated_list_response(payload, message="Supervisors fetched.")
 
 
 
@@ -1724,9 +1729,9 @@ class TaskViewSet(viewsets.ModelViewSet):
         return queryset
 
     def get_permissions(self):
-        if self.action in {"create", "request_deadline_change"}:
+        if self.action in {"create", "request_deadline_change", "partial_update"}:
             return [IsAuthenticated()]
-        if self.action in {"update", "partial_update", "destroy", "assign"}:
+        if self.action in {"update", "destroy", "assign"}:
             return [IsAuthenticated(), IsAdminOrBA()]
         return [IsAuthenticated()]
 
@@ -1876,6 +1881,52 @@ class TaskViewSet(viewsets.ModelViewSet):
             msg = "Task created successfully. Mail sent successfully."
         return api_response(True, msg, status.HTTP_201_CREATED, payload)
 
+    def _employee_allowed_patch_fields(self, task):
+        allowed = {"title", "description"}
+        if task.is_self_created:
+            allowed.update({"project", "project_name", "milestone", "milestone_name"})
+        return allowed
+
+    def _employee_patch_payload(self, request, allowed_fields):
+        if hasattr(request.data, "lists"):
+            raw = {key: request.data.get(key) for key in request.data}
+        else:
+            raw = dict(request.data)
+        return {key: value for key, value in raw.items() if key in allowed_fields}
+
+    def perform_employee_update(self, serializer):
+        instance = serializer.instance
+        if instance.is_self_created:
+            project = serializer.validated_data.get("project", instance.project)
+            milestone = serializer.validated_data.get("milestone", instance.milestone)
+            self._validate_project_milestone_scope(project, milestone)
+        task = serializer.save()
+        _sync_parent_statuses_for_task(task)
+
+    def _employee_partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.assigned_to_id != request.user.id:
+            raise PermissionDenied("You can only edit tasks assigned to you.")
+
+        allowed_fields = self._employee_allowed_patch_fields(instance)
+        filtered = self._employee_patch_payload(request, allowed_fields)
+        if not filtered:
+            return api_response(
+                False,
+                "No editable fields provided.",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = self.get_serializer(instance, data=filtered, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_employee_update(serializer)
+        return api_response(
+            True,
+            "Task updated successfully.",
+            status.HTTP_200_OK,
+            dict(serializer.data),
+        )
+
     def perform_update(self, serializer):
         self._reset_mail_state()
         previous_assignee_id = getattr(serializer.instance, "assigned_to_id", None)
@@ -1938,6 +1989,8 @@ class TaskViewSet(viewsets.ModelViewSet):
         return api_response(True, msg, status.HTTP_200_OK, payload)
 
     def partial_update(self, request, *args, **kwargs):
+        if user_role(request.user) == UserProfile.Roles.EMPLOYEE:
+            return self._employee_partial_update(request, *args, **kwargs)
         kwargs["partial"] = True
         return self.update(request, *args, **kwargs)
 
@@ -2074,19 +2127,40 @@ class TaskViewSet(viewsets.ModelViewSet):
         if user_role(request.user) not in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
             return api_response(False, "Only Admin or BA can view time logs.", status.HTTP_403_FORBIDDEN)
         task = self.get_object()
-        logs = task.time_logs.all().order_by("-created_at")
+        logs = assignee_time_logs_queryset(
+            task,
+            user_id=request.query_params.get("user_id"),
+        )
+        logs = logs.order_by("-start_time")
         history = logs.aggregate(
             start_count=Count("id"),
             pause_count=Count("id", filter=Q(source=TimeLog.Source.MANUAL_PAUSE)),
             stop_count=Count("id", filter=Q(source=TimeLog.Source.MANUAL_STOP)),
+            auto_stop_count=Count("id", filter=Q(source=TimeLog.Source.AUTO_STOP_8PM)),
         )
+        page, paginator = paginate_request(request, logs)
+        targets = page if page is not None else logs
+        serialized_logs = TimeLogSerializer(targets, many=True).data
+        if paginator is not None:
+            return Response(
+                {
+                    "success": True,
+                    "message": "Time logs fetched.",
+                    "code": status.HTTP_200_OK,
+                    "data": {
+                        "history": history,
+                        "time_logs": serialized_logs,
+                    },
+                    "meta": paginator._meta_payload(),
+                }
+            )
         return api_response(
             True,
             "Time logs fetched.",
             status.HTTP_200_OK,
             {
                 "history": history,
-                "time_logs": TimeLogSerializer(logs, many=True).data,
+                "time_logs": serialized_logs,
             },
         )
 
@@ -2314,12 +2388,14 @@ class InternalAdminUsersAPIView(APIView):
                     "status": UserProfile.Status.ACTIVE,
                 }
             )
-        return api_response(
-            True,
-            "Admin users fetched.",
-            status.HTTP_200_OK,
-            {"results": payload},
-        )
+        page, paginator = paginate_request(request, payload)
+        paged_payload = page if page is not None else payload
+        if paginator is not None:
+            return paginator.get_paginated_response(
+                paged_payload,
+                message="Admin users fetched.",
+            )
+        return unpaginated_list_response(paged_payload, message="Admin users fetched.")
 
 
 @extend_schema(tags=["Common APIs"])
@@ -2366,6 +2442,8 @@ class InternalStaffUsersAPIView(APIView):
             .select_related("profile")
             .order_by("id")
         )
+        page, paginator = paginate_request(request, staff)
+        targets = page if page is not None else staff
         payload = [
             {
                 "id": user.id,
@@ -2376,14 +2454,14 @@ class InternalStaffUsersAPIView(APIView):
                 "status": user.profile.status,
                 "department": user.profile.department or "",
             }
-            for user in staff
+            for user in targets
         ]
-        return api_response(
-            True,
-            "Staff users fetched.",
-            status.HTTP_200_OK,
-            {"results": payload},
-        )
+        if paginator is not None:
+            return paginator.get_paginated_response(
+                payload,
+                message="Staff users fetched.",
+            )
+        return unpaginated_list_response(payload, message="Staff users fetched.")
 
 
 @extend_schema(tags=["Common APIs"])
@@ -2795,10 +2873,11 @@ class WorkTrackingAPIView(APIView):
                     current_session_seconds
                 )
 
+            visible_logs = assignee_time_logs_queryset(task)
             last_completed_log = (
-                TimeLog.objects.filter(task=task, user=task.assigned_to, end_time__isnull=False).order_by("-end_time").first()
+                visible_logs.filter(end_time__isnull=False).order_by("-end_time").first()
             )
-            history = TimeLog.objects.filter(task=task, user=task.assigned_to).aggregate(
+            history = visible_logs.aggregate(
                 start_count=Count("id"),
                 pause_count=Count("id", filter=Q(source=TimeLog.Source.MANUAL_PAUSE)),
                 stop_count=Count("id", filter=Q(source=TimeLog.Source.MANUAL_STOP)),
@@ -2856,9 +2935,21 @@ class WorkTrackingAPIView(APIView):
                     [item for item in records if item["timer_state"] == "AUTO_STOPPED"]
                 ),
             },
-            "work_tracking": records,
             "recent_activity": self._build_recent_activity(tasks_qs, role, request.user),
         }
+        page, paginator = paginate_request(request, records)
+        paged_records = page if page is not None else records
+        data["work_tracking"] = paged_records
+        if paginator is not None:
+            return Response(
+                {
+                    "success": True,
+                    "message": "Work tracking fetched.",
+                    "code": status.HTTP_200_OK,
+                    "data": data,
+                    "meta": paginator._meta_payload(),
+                }
+            )
         return api_response(True, "Work tracking fetched.", status.HTTP_200_OK, data)
 
     def _build_recent_activity(self, tasks_qs, role, actor):
@@ -3497,7 +3588,7 @@ class MyTasksAPIView(APIView):
 
     @extend_schema(responses={200: OpenApiTypes.OBJECT})
     def get(self, request):
-        tasks = apply_work_history_retention(
+        tasks_qs = apply_work_history_retention(
             Task.objects.select_related(
                 "project",
                 "milestone",
@@ -3508,5 +3599,12 @@ class MyTasksAPIView(APIView):
             .prefetch_related("project__files")
             .filter(assigned_to=request.user)
         ).order_by("-created_at")
-        serializer = TaskSerializer(tasks, many=True, context={"request": request})
-        return api_response(True, "My tasks fetched.", status.HTTP_200_OK, serializer.data)
+        page, paginator = paginate_request(request, tasks_qs)
+        targets = page if page is not None else tasks_qs
+        serializer = TaskSerializer(targets, many=True, context={"request": request})
+        if paginator is not None:
+            return paginator.get_paginated_response(
+                serializer.data,
+                message="My tasks fetched.",
+            )
+        return unpaginated_list_response(serializer.data, message="My tasks fetched.")
