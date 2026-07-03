@@ -14,7 +14,7 @@ import hashlib
 import json
 import secrets
 from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import OpenApiExample, extend_schema
+from drf_spectacular.utils import OpenApiExample, OpenApiParameter, extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -1639,7 +1639,81 @@ class ProjectViewSet(viewsets.ModelViewSet):
         payload = project_progress_data(project)
         return api_response(True, "Project progress calculated.", status.HTTP_200_OK, payload)
 
+    @extend_schema(
+        summary="Project detail (single payload)",
+        description=(
+            "Returns project fields plus milestones, project-level files, and tasks "
+            "for one project in a single response (no paginated list walks)."
+        ),
+        parameters=[
+            OpenApiParameter(
+                name="include_tasks",
+                type=OpenApiTypes.BOOL,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="Set false to omit tasks (e.g. employee project overview). Default true.",
+            ),
+        ],
+        responses={200: OpenApiTypes.OBJECT},
+    )
+    @action(detail=True, methods=["get"], url_path="detail")
+    def project_detail(self, request, pk=None):
+        project = self.get_object()
+        include_tasks = request.query_params.get("include_tasks", "true").lower() not in {
+            "0",
+            "false",
+            "no",
+        }
+        payload = build_project_detail_payload(project, request, include_tasks=include_tasks)
+        return api_response(True, "Project detail loaded.", status.HTTP_200_OK, payload)
 
+
+def build_project_detail_payload(project, request, *, include_tasks=True):
+    """Aggregate project + milestones + files + tasks for the detail page."""
+    sync_parent_statuses_for_project(project.id)
+    ctx = {"request": request}
+    role = user_role(request.user)
+
+    milestones_qs = (
+        Milestone.objects.select_related("project")
+        .filter(project_id=project.id)
+        .order_by("milestone_no", "id")
+    )
+    if role == UserProfile.Roles.EMPLOYEE:
+        milestones_qs = milestones_qs.filter(tasks__assigned_to=request.user).distinct()
+
+    files_qs = FileAttachment.objects.select_related(
+        "uploaded_by",
+        "project",
+        "milestone",
+        "milestone__project",
+        "task",
+        "task__project",
+    ).filter(project_id=project.id).order_by("-created_at")
+
+    tasks_data = []
+    if include_tasks:
+        tasks_qs = (
+            Task.objects.select_related(
+                "project",
+                "milestone",
+                "assigned_to",
+                "supervisor",
+                "created_by",
+            )
+            .filter(project_id=project.id)
+            .order_by("-created_at")
+        )
+        if role == UserProfile.Roles.EMPLOYEE:
+            tasks_qs = tasks_qs.filter(assigned_to=request.user)
+        tasks_data = TaskSerializer(tasks_qs, many=True, context=ctx).data
+
+    return {
+        "project": ProjectSerializer(project, context=ctx).data,
+        "milestones": MilestoneSerializer(milestones_qs, many=True, context=ctx).data,
+        "files": FileAttachmentSerializer(files_qs, many=True, context=ctx).data,
+        "tasks": tasks_data,
+    }
 
 
 
