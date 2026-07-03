@@ -44,6 +44,8 @@ router.register(r"tasks", TaskViewSet, basename="tasks")
 router.register(r"files", FileAttachmentViewSet, basename="files")
 router.register(r"notifications", NotificationViewSet, basename="notifications")
 
+project_detail_view = ProjectViewSet.as_view({"get": "project_detail"})
+
 urlpatterns = [
     path("auth/login", LoginAPIView.as_view(), name="auth-login"),
     path("auth/first-login/request-otp", FirstLoginRequestOTPAPIView.as_view(), name="first-login-request-otp"),
@@ -93,5 +95,7 @@ urlpatterns = [
         InternalNotificationCreateAPIView.as_view(),
         name="internal-notifications",
     ),
+    # Explicit route so production/nginx always resolves project detail (DRF router also registers this).
+    path("projects/<int:pk>/detail/", project_detail_view, name="project-detail"),
     path("", include(router.urls)),
 ]
