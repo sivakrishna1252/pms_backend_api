@@ -423,7 +423,7 @@ Body:
 Response includes `duration_seconds` and cumulative `total_time_spent_seconds`.
 
 ### GET `/tasks/{id}/time-logs/`
-Returns timer session history for Admin/BA. Start/pause/stop timeline entries before `TIMER_LOGS_VISIBLE_FROM` (or before today when unset) are excluded. **Working time totals elsewhere still include all tracked work.**
+Returns timer session history for Admin/BA. When `TIMER_LOGS_VISIBLE_FROM` is set, start/pause/stop timeline entries before that date are excluded; when unset, the full history is returned. **Working time totals elsewhere still include all tracked work.**
 
 ### Employee task lifecycle (recommended flow)
 1. Employee opens assigned task from `GET /my/tasks` or `GET /tasks/{id}/`

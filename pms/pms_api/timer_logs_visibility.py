@@ -12,22 +12,24 @@ def timer_logs_visible_from_date():
     """
     First calendar date whose timer sessions are shown in admin UI.
 
-    Uses settings.TIMER_LOGS_VISIBLE_FROM when set (recommended on deploy).
-    Otherwise falls back to the current local date so older test data stays hidden.
+    Uses settings.TIMER_LOGS_VISIBLE_FROM when set to hide older sessions.
+    When unset, returns None and the full timer history is shown.
     """
-    configured = getattr(settings, "TIMER_LOGS_VISIBLE_FROM", None)
-    if configured is not None:
-        return configured
-    return timezone.localdate()
+    return getattr(settings, "TIMER_LOGS_VISIBLE_FROM", None)
 
 
 def timer_logs_visible_from_datetime():
     day = timer_logs_visible_from_date()
+    if day is None:
+        return None
     return timezone.make_aware(datetime.combine(day, dt_time.min))
 
 
 def apply_timer_logs_visibility(queryset):
-    return queryset.filter(start_time__gte=timer_logs_visible_from_datetime())
+    cutoff = timer_logs_visible_from_datetime()
+    if cutoff is None:
+        return queryset
+    return queryset.filter(start_time__gte=cutoff)
 
 
 def assignee_time_logs_queryset(task: Task, user_id=None):

@@ -252,8 +252,8 @@ AUTO_STOP_CUTOFF_HOUR = int(os.getenv("AUTO_STOP_CUTOFF_HOUR", "20"))
 AUTO_STOP_CUTOFF_MINUTE = int(os.getenv("AUTO_STOP_CUTOFF_MINUTE", "0"))
 
 # Timer log history shown in Admin Tasks / work-tracking (YYYY-MM-DD, local TIME_ZONE).
-# Set once on deploy to the go-live date so pre-release sessions stay hidden.
-# When unset, only sessions from the current local day onward are shown.
+# Optional: set to hide sessions before this date (e.g. pre-release test data).
+# When unset, the full start/pause/stop history is shown.
 _timer_logs_visible_from_raw = os.getenv("TIMER_LOGS_VISIBLE_FROM", "").strip()
 if _timer_logs_visible_from_raw:
     try:

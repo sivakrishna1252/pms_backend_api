@@ -1,6 +1,5 @@
 from datetime import datetime
 from decimal import Decimal
-from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
@@ -38,6 +37,5 @@ class TimerLogsVisibilityTests(SimpleTestCase):
         self.assertEqual(timer_logs_visible_from_date(), datetime(2026, 7, 2).date())
 
     @override_settings(TIMER_LOGS_VISIBLE_FROM=None)
-    @patch("pms_api.timer_logs_visibility.timezone.localdate", return_value=datetime(2026, 7, 2).date())
-    def test_default_visible_from_is_local_today(self, _mock_localdate):
-        self.assertEqual(timer_logs_visible_from_date(), datetime(2026, 7, 2).date())
+    def test_unset_visible_from_shows_full_history(self):
+        self.assertIsNone(timer_logs_visible_from_date())
