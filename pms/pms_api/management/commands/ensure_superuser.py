@@ -49,6 +49,7 @@ class Command(BaseCommand):
                             f"(DJANGO_SUPERUSER_PROMOTE_EXISTING=true)."
                         )
                     )
+                    self._ensure_portal_admin_profile(username)
                     return
 
                 self.stdout.write(
@@ -85,7 +86,27 @@ class Command(BaseCommand):
                     f"(DJANGO_SUPERUSER_PROMOTE_EXISTING=true)."
                 )
             )
+            self._ensure_portal_admin_profile(username)
             return
 
         User.objects.create_superuser(username=username, email=email, password=password)
         self.stdout.write(self.style.SUCCESS(f"Created superuser {username!r}."))
+        self._ensure_portal_admin_profile(username)
+
+    def _ensure_portal_admin_profile(self, username: str) -> None:
+        from pms_api.models import UserProfile
+
+        User = get_user_model()
+        user = User.objects.filter(**{User.USERNAME_FIELD: username}).first()
+        if not user:
+            return
+        profile, _ = UserProfile.objects.get_or_create(user=user)
+        updates = []
+        if not profile.password_set:
+            profile.password_set = True
+            updates.append("password_set")
+        if profile.role != UserProfile.Roles.ADMIN:
+            profile.role = UserProfile.Roles.ADMIN
+            updates.append("role")
+        if updates:
+            profile.save(update_fields=updates)

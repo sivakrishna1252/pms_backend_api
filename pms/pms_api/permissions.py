@@ -9,6 +9,25 @@ def user_role(user):
     return getattr(profile, "role", None)
 
 
+def effective_portal_role(user):
+    """
+    Portal role for login, /auth/me, and route guards.
+    UserProfile.role is authoritative for ADMIN / BA / EMPLOYEE.
+    Django superusers without a profile role fall back to ADMIN (bootstrap accounts).
+    is_staff alone does NOT imply ADMIN — it is only for Django admin access.
+    """
+    role = user_role(user)
+    if role in {
+        UserProfile.Roles.ADMIN,
+        UserProfile.Roles.BA,
+        UserProfile.Roles.EMPLOYEE,
+    }:
+        return role
+    if getattr(user, "is_superuser", False):
+        return UserProfile.Roles.ADMIN
+    return None
+
+
 
 
 class IsAdmin(BasePermission):

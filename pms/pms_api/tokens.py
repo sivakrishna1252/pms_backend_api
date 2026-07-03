@@ -1,10 +1,11 @@
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import UserProfile
+from .permissions import effective_portal_role
 
 
 class PMSRefreshToken(RefreshToken):
-    """Embed profile role and Django staff flags for downstream services (e.g. attendance)."""
+    """Embed portal role and Django staff flags for downstream services (e.g. attendance)."""
 
     @classmethod
     def for_user(cls, user):
@@ -12,7 +13,7 @@ class PMSRefreshToken(RefreshToken):
         profile = getattr(user, "profile", None)
         if profile is None:
             profile, _ = UserProfile.objects.get_or_create(user=user)
-        role = getattr(profile, "role", None)
+        role = effective_portal_role(user)
         if role:
             token["role"] = role
         token["is_staff"] = bool(user.is_staff)

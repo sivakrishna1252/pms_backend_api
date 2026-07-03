@@ -128,8 +128,9 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "date_joined", "last_login"]
 
     def get_role(self, obj) -> str:
-        profile = getattr(obj, "profile", None)
-        return getattr(profile, "role", None)
+        from .permissions import effective_portal_role
+
+        return effective_portal_role(obj) or UserProfile.Roles.EMPLOYEE
 
     def get_status(self, obj) -> str:
         profile = getattr(obj, "profile", None)

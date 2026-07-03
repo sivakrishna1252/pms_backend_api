@@ -66,7 +66,8 @@ pipeline {
                     if [ -f scripts/production/install-auto-stop-tasks-cron.sh ]; then
                       chmod +x scripts/production/install-auto-stop-tasks-cron.sh
                       chmod +x scripts/production/auto-stop-tasks.sh
-                      PMS_CONTAINER=${APP_NAME} scripts/production/install-auto-stop-tasks-cron.sh
+                      chmod +x scripts/production/auto-checkout-attendance-final.sh
+                      PMS_CONTAINER=${APP_NAME} ATTENDANCE_CONTAINER=hrms-attendance-prod scripts/production/install-auto-stop-tasks-cron.sh
                     else
                       echo "WARN: scripts/production/install-auto-stop-tasks-cron.sh not found; skip cron."
                       echo "Ensure Jenkins checks out the monorepo root (Project_management)."

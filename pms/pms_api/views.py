@@ -1162,8 +1162,7 @@ class LoginAPIView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
         profile, _ = UserProfile.objects.get_or_create(user=user)
-        # Manually managed admin accounts (Django admin/superuser/staff) should
-        # not be blocked by first-login onboarding flow.
+        # Django superuser / staff accounts skip first-login onboarding.
         is_manual_admin_account = bool(user.is_superuser or user.is_staff)
         if not profile.password_set and not is_manual_admin_account:
             return api_response(
@@ -1175,6 +1174,10 @@ class LoginAPIView(APIView):
         if is_manual_admin_account and not profile.password_set:
             profile.password_set = True
             profile.save(update_fields=["password_set"])
+        # Bootstrap superuser: ensure portal profile role is ADMIN (never infer from is_staff).
+        if user.is_superuser and profile.role != UserProfile.Roles.ADMIN:
+            profile.role = UserProfile.Roles.ADMIN
+            profile.save(update_fields=["role"])
         payload = AuthResponseSerializer.build(user)
         return api_response(True, "Login successful.", status.HTTP_200_OK, payload)
 
@@ -1640,6 +1643,19 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
 
 
+def apply_admin_milestone_list_filters(queryset, request):
+    """List filters for Admin/BA milestone table (project, milestone, progress band)."""
+    project_id = request.query_params.get("project")
+    if project_id:
+        queryset = queryset.filter(project_id=project_id)
+
+    milestone_id = request.query_params.get("milestone_id")
+    if milestone_id:
+        queryset = queryset.filter(id=milestone_id)
+
+    return queryset
+
+
 #milestone view set pagination
 @extend_schema(tags=["BA/Admin APIs"])
 class MilestoneViewSet(viewsets.ModelViewSet):
@@ -1653,6 +1669,9 @@ class MilestoneViewSet(viewsets.ModelViewSet):
         queryset = super().get_queryset()
         if user_role(self.request.user) == UserProfile.Roles.EMPLOYEE:
             return queryset.filter(tasks__assigned_to=self.request.user).distinct()
+        role = user_role(self.request.user)
+        if role in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
+            return apply_admin_milestone_list_filters(queryset, self.request)
         return queryset
 
     def get_permissions(self):
@@ -1664,7 +1683,23 @@ class MilestoneViewSet(viewsets.ModelViewSet):
         serializer.save(created_by=self.request.user)
 
     def list(self, request, *args, **kwargs):
+        from .export_utils import matches_progress_band
+        from .progress import milestone_progress_data
+
         queryset = self.filter_queryset(self.get_queryset())
+        progress_band = (request.query_params.get("progress_band") or "").strip()
+        if progress_band:
+            matching_ids = []
+            for milestone in queryset.iterator(chunk_size=200):
+                progress = milestone_progress_data(milestone).get("progress_percent")
+                progress_value = progress if progress is not None else 0
+                if matches_progress_band(progress_value, progress_band):
+                    matching_ids.append(milestone.id)
+            queryset = (
+                Milestone.objects.select_related("project")
+                .filter(id__in=matching_ids)
+                .order_by("-created_at")
+            )
         page = self.paginate_queryset(queryset)
         targets = page if page is not None else queryset
         project_ids = {m.project_id for m in targets if m.project_id}
@@ -1701,7 +1736,76 @@ class MilestoneViewSet(viewsets.ModelViewSet):
         return api_response(True, "Milestone progress calculated.", status.HTTP_200_OK, payload)
 
 
+def _active_task_ids_queryset():
+    return TimeLog.objects.filter(end_time__isnull=True).values_list("task_id", flat=True)
 
+
+def apply_admin_task_list_filters(queryset, request):
+    """List filters for Admin/BA task table (assignee, project, dates, progress, etc.)."""
+    user = request.user
+    role = user_role(user) if user.is_authenticated else None
+
+    if role == UserProfile.Roles.EMPLOYEE:
+        return queryset.filter(assigned_to=user)
+
+    assigned_to = request.query_params.get("assigned_to")
+    if assigned_to:
+        queryset = queryset.filter(assigned_to_id=assigned_to)
+
+    project_id = request.query_params.get("project")
+    if project_id:
+        queryset = queryset.filter(project_id=project_id)
+
+    milestone_id = request.query_params.get("milestone_id")
+    if milestone_id:
+        queryset = queryset.filter(milestone_id=milestone_id)
+
+    task_id = request.query_params.get("task_id")
+    if task_id:
+        queryset = queryset.filter(id=task_id)
+
+    date_from_raw = request.query_params.get("date_from")
+    date_to_raw = request.query_params.get("date_to")
+    if date_from_raw and date_to_raw:
+        try:
+            range_start = datetime.strptime(date_from_raw, "%Y-%m-%d").date()
+            range_end = datetime.strptime(date_to_raw, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+        else:
+            window_start = timezone.make_aware(datetime.combine(range_start, time.min))
+            window_end = timezone.make_aware(datetime.combine(range_end, time.max))
+            log_qs = TimeLog.objects.filter(
+                Q(start_time__lte=window_end)
+                & (Q(end_time__gte=window_start) | Q(end_time__isnull=True))
+            )
+            if assigned_to:
+                log_qs = log_qs.filter(user_id=assigned_to)
+            queryset = queryset.filter(
+                id__in=log_qs.values_list("task_id", flat=True).distinct()
+            )
+
+    progress = (request.query_params.get("progress") or "").strip()
+    if progress:
+        active_ids = _active_task_ids_queryset()
+        if progress == "Complete":
+            queryset = queryset.filter(status=Task.Status.COMPLETED)
+        elif progress == "Delayed":
+            queryset = queryset.filter(status=Task.Status.DELAYED)
+        elif progress == "Not Started":
+            queryset = queryset.filter(status=Task.Status.NOT_STARTED)
+        elif progress == "Running":
+            queryset = queryset.filter(id__in=active_ids)
+        elif progress == "Paused":
+            queryset = queryset.filter(status=Task.Status.PAUSED).exclude(id__in=active_ids)
+        elif progress in {"Stopped", "Auto stop"}:
+            queryset = queryset.filter(
+                Q(status=Task.Status.BLOCKED)
+                | Q(status=Task.Status.PAUSED)
+                | Q(status=Task.Status.IN_PROGRESS)
+            ).exclude(id__in=active_ids)
+
+    return queryset
 
 
 #task view set pagination
@@ -1720,13 +1824,9 @@ class TaskViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         apply_automatic_task_status_rules()
-        user = self.request.user
-        queryset = super().get_queryset()
-        if not user.is_authenticated:
-            return queryset.none()
-        if user_role(user) == UserProfile.Roles.EMPLOYEE:
-            return queryset.filter(assigned_to=user)
-        return queryset
+        if not self.request.user.is_authenticated:
+            return super().get_queryset().none()
+        return apply_admin_task_list_filters(super().get_queryset(), self.request)
 
     def get_permissions(self):
         if self.action in {"create", "request_deadline_change", "partial_update"}:
@@ -2532,6 +2632,282 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         )
 
 
+def _pick_primary_milestone(project_id, milestones):
+    project_milestones = [m for m in milestones if m.project_id == project_id]
+    project_milestones.sort(key=lambda item: item.milestone_no, reverse=True)
+    if not project_milestones:
+        return None
+    for milestone in project_milestones:
+        if milestone.status == Milestone.Status.IN_PROGRESS:
+            return milestone
+    for milestone in project_milestones:
+        if milestone.status in {Milestone.Status.NOT_STARTED, Milestone.Status.DELAYED}:
+            return milestone
+    return project_milestones[0]
+
+
+def _project_overview_ui_status(project, milestones, tasks):
+    primary_milestone = _pick_primary_milestone(project.id, milestones)
+    delayed = project.status == Project.Status.DELAYED or (
+        primary_milestone is not None and primary_milestone.status == Milestone.Status.DELAYED
+    )
+    total_tasks = len(tasks)
+    completed_tasks = sum(1 for task in tasks if task.status == Task.Status.COMPLETED)
+    in_progress_tasks = sum(1 for task in tasks if task.status == Task.Status.IN_PROGRESS)
+    delayed_tasks = sum(1 for task in tasks if task.status == Task.Status.DELAYED)
+    paused_tasks = sum(1 for task in tasks if task.status == Task.Status.PAUSED)
+    stopped_tasks = sum(1 for task in tasks if task.status == Task.Status.BLOCKED)
+    project_milestones = [m for m in milestones if m.project_id == project.id]
+    completed_milestones = sum(
+        1 for milestone in project_milestones if milestone.status == Milestone.Status.COMPLETED
+    )
+
+    if total_tasks == 0:
+        return "Not Started"
+    if completed_tasks == total_tasks:
+        return "Completed"
+    if delayed_tasks > 0 or delayed:
+        return "Delayed"
+    if in_progress_tasks > 0:
+        return "In Progress"
+    if paused_tasks > 0:
+        return "Paused"
+    if stopped_tasks > 0:
+        return "Stopped"
+    if completed_tasks > 0:
+        return "In Progress"
+    return "Not Started"
+
+
+def _build_project_overview_row(project, milestones, tasks):
+    primary_milestone = _pick_primary_milestone(project.id, milestones)
+    project_milestones = [m for m in milestones if m.project_id == project.id]
+    completed_milestones = sum(
+        1 for milestone in project_milestones if milestone.status == Milestone.Status.COMPLETED
+    )
+    total_tasks = len(tasks)
+    completed_tasks = sum(1 for task in tasks if task.status == Task.Status.COMPLETED)
+    in_progress_tasks = sum(1 for task in tasks if task.status == Task.Status.IN_PROGRESS)
+    paused_tasks = sum(1 for task in tasks if task.status == Task.Status.PAUSED)
+    stopped_tasks = sum(1 for task in tasks if task.status == Task.Status.BLOCKED)
+    delayed_tasks = sum(1 for task in tasks if task.status == Task.Status.DELAYED)
+
+    milestone_label = (
+        f"M{primary_milestone.milestone_no}: {primary_milestone.name}"
+        if primary_milestone
+        else "—"
+    )
+    task_summary = (
+        f"{completed_tasks}/{total_tasks} completed · {in_progress_tasks} in progress · "
+        f"{paused_tasks} paused · {stopped_tasks} stopped · {delayed_tasks} delayed · "
+        f"{completed_milestones}/{len(project_milestones)} milestones done"
+    )
+
+    return {
+        "id": project.id,
+        "project_name": project.name,
+        "milestone": milestone_label,
+        "task_summary": task_summary,
+        "status": _project_overview_ui_status(project, milestones, tasks),
+    }
+
+
+def build_admin_dashboard_summary():
+    apply_automatic_task_status_rules()
+    tasks_qs = Task.objects.all()
+    task_ids = list(tasks_qs.values_list("id", flat=True))
+    return {
+        "overview": {
+            "users_count": User.objects.filter(
+                profile__role__in=[
+                    UserProfile.Roles.ADMIN,
+                    UserProfile.Roles.BA,
+                    UserProfile.Roles.EMPLOYEE,
+                ]
+            ).count(),
+            "ba_count": User.objects.filter(profile__role=UserProfile.Roles.BA).count(),
+            "employee_count": User.objects.filter(profile__role=UserProfile.Roles.EMPLOYEE).count(),
+            "projects_count": Project.objects.count(),
+            "tasks_count": tasks_qs.count(),
+            "active_timers": TimeLog.objects.filter(
+                end_time__isnull=True, task_id__in=task_ids
+            ).count(),
+        },
+        "task_status_counts": {
+            "not_started": tasks_qs.filter(status=Task.Status.NOT_STARTED).count(),
+            "in_progress": tasks_qs.filter(status=Task.Status.IN_PROGRESS).count(),
+            "paused": tasks_qs.filter(status=Task.Status.PAUSED).count(),
+            "completed": tasks_qs.filter(status=Task.Status.COMPLETED).count(),
+            "delayed": tasks_qs.filter(status=Task.Status.DELAYED).count(),
+            "blocked": tasks_qs.filter(status=Task.Status.BLOCKED).count(),
+        },
+    }
+
+
+def _ba_allowed_creator_ids(user):
+    admin_ids = list(
+        User.objects.filter(
+            profile__role=UserProfile.Roles.ADMIN,
+            profile__status=UserProfile.Status.ACTIVE,
+        ).values_list("id", flat=True)
+    )
+    return [user.id, *admin_ids]
+
+
+def build_ba_dashboard_summary(user):
+    apply_automatic_task_status_rules()
+    allowed_creator_ids = _ba_allowed_creator_ids(user)
+    ba_tasks_qs = Task.objects.filter(
+        Q(created_by_id__in=allowed_creator_ids) | Q(supervisor=user)
+    )
+    employee_ids = list(
+        ba_tasks_qs.exclude(assigned_to_id__isnull=True)
+        .values_list("assigned_to_id", flat=True)
+        .distinct()
+    )
+    employee_rows = list(
+        User.objects.filter(id__in=employee_ids, profile__role=UserProfile.Roles.EMPLOYEE)
+        .annotate(
+            assigned_tasks_count=Count(
+                "tasks_assigned",
+                filter=Q(tasks_assigned__created_by=user),
+                distinct=True,
+            ),
+            completed_tasks_count=Count(
+                "tasks_assigned",
+                filter=Q(
+                    tasks_assigned__created_by=user,
+                    tasks_assigned__status=Task.Status.COMPLETED,
+                ),
+                distinct=True,
+            ),
+            in_progress_tasks_count=Count(
+                "tasks_assigned",
+                filter=Q(
+                    tasks_assigned__created_by=user,
+                    tasks_assigned__status=Task.Status.IN_PROGRESS,
+                ),
+                distinct=True,
+            ),
+            delayed_tasks_count=Count(
+                "tasks_assigned",
+                filter=Q(
+                    tasks_assigned__created_by=user,
+                    tasks_assigned__status=Task.Status.DELAYED,
+                ),
+                distinct=True,
+            ),
+        )
+        .values(
+            "id",
+            "first_name",
+            "last_name",
+            "email",
+            "assigned_tasks_count",
+            "completed_tasks_count",
+            "in_progress_tasks_count",
+            "delayed_tasks_count",
+        )
+        .order_by("first_name", "id")
+    )
+    employee_summary = [
+        {
+            "id": row["id"],
+            "first_name": row["first_name"],
+            "last_name": row["last_name"],
+            "email": row["email"],
+            "assigned_tasks": row["assigned_tasks_count"],
+            "completed_tasks": row["completed_tasks_count"],
+            "in_progress_tasks": row["in_progress_tasks_count"],
+            "delayed_tasks": row["delayed_tasks_count"],
+        }
+        for row in employee_rows
+    ]
+    project_ids = list(ba_tasks_qs.values_list("project_id", flat=True).distinct())
+    task_status_counts = {
+        "not_started": ba_tasks_qs.filter(status=Task.Status.NOT_STARTED).count(),
+        "in_progress": ba_tasks_qs.filter(status=Task.Status.IN_PROGRESS).count(),
+        "paused": ba_tasks_qs.filter(status=Task.Status.PAUSED).count(),
+        "completed": ba_tasks_qs.filter(status=Task.Status.COMPLETED).count(),
+        "delayed": ba_tasks_qs.filter(status=Task.Status.DELAYED).count(),
+        "blocked": ba_tasks_qs.filter(status=Task.Status.BLOCKED).count(),
+    }
+    return {
+        "tasks_created": ba_tasks_qs.count(),
+        "tasks_completed": ba_tasks_qs.filter(status=Task.Status.COMPLETED).count(),
+        "tasks_in_progress": ba_tasks_qs.filter(status=Task.Status.IN_PROGRESS).count(),
+        "tasks_delayed": ba_tasks_qs.filter(status=Task.Status.DELAYED).count(),
+        "assigned_employees": len(employee_ids),
+        "overview": {
+            "projects_count": len([pid for pid in project_ids if pid is not None]),
+            "tasks_count": ba_tasks_qs.count(),
+            "employee_count": len(employee_ids),
+        },
+        "task_status_counts": task_status_counts,
+        "employee_summary": employee_summary,
+    }
+
+
+def build_dashboard_project_overview_page(request, user):
+    apply_automatic_task_status_rules()
+    role = user_role(user)
+    if role == UserProfile.Roles.BA:
+        allowed_creator_ids = _ba_allowed_creator_ids(user)
+        ba_tasks_qs = Task.objects.filter(
+            Q(created_by_id__in=allowed_creator_ids) | Q(supervisor=user)
+        )
+        project_ids = list(ba_tasks_qs.values_list("project_id", flat=True).distinct())
+        queryset = Project.objects.filter(id__in=project_ids).order_by("-updated_at")
+    else:
+        queryset = Project.objects.all().order_by("-updated_at")
+
+    page, paginator = paginate_request(request, queryset)
+    targets = page if page is not None else queryset
+    project_ids = [project.id for project in targets]
+    milestone_qs = Milestone.objects.filter(project_id__in=project_ids)
+    task_qs = Task.objects.filter(project_id__in=project_ids)
+
+    milestones_by_project: dict[int, list] = {}
+    for milestone in milestone_qs:
+        milestones_by_project.setdefault(milestone.project_id, []).append(milestone)
+    tasks_by_project: dict[int, list] = {}
+    for task in task_qs:
+        if task.project_id is None:
+            continue
+        tasks_by_project.setdefault(task.project_id, []).append(task)
+
+    rows = [
+        _build_project_overview_row(
+            project,
+            milestones_by_project.get(project.id, []),
+            tasks_by_project.get(project.id, []),
+        )
+        for project in targets
+    ]
+    if paginator is not None:
+        return paginator.get_paginated_response(
+            rows,
+            message="Project overview fetched.",
+        )
+    return unpaginated_list_response(rows, message="Project overview fetched.")
+
+
+@extend_schema(tags=["Common APIs"])
+class AdminProjectOverviewAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: OpenApiTypes.OBJECT})
+    def get(self, request):
+        role = user_role(request.user)
+        if role not in {UserProfile.Roles.ADMIN, UserProfile.Roles.BA}:
+            return api_response(
+                False,
+                "Only Admin or BA can access project overview.",
+                status.HTTP_403_FORBIDDEN,
+            )
+        return build_dashboard_project_overview_page(request, request.user)
+
+
 #dashboard api view
 @extend_schema(tags=["Common APIs"])
 class DashboardAPIView(APIView):
@@ -2541,189 +2917,15 @@ class DashboardAPIView(APIView):
     def get(self, request):
         user = request.user
         if user_role(user) == UserProfile.Roles.ADMIN:
-            data = build_admin_overview_payload()
-            return api_response(True, "Admin dashboard fetched (same as admin overview).", status.HTTP_200_OK, data)
+            data = build_admin_dashboard_summary()
+            return api_response(
+                True,
+                "Admin dashboard fetched.",
+                status.HTTP_200_OK,
+                data,
+            )
         if user_role(user) == UserProfile.Roles.BA:
-            allowed_creator_ids = [user.id]
-            admin_ids = list(
-                User.objects.filter(
-                    profile__role=UserProfile.Roles.ADMIN,
-                    profile__status=UserProfile.Status.ACTIVE,
-                ).values_list("id", flat=True)
-            )
-            allowed_creator_ids.extend(admin_ids)
-
-            # BA dashboard: tasks they created + employee self-created tasks they supervise.
-            ba_tasks_qs = Task.objects.filter(
-                Q(created_by_id__in=allowed_creator_ids) | Q(supervisor=user)
-            ).select_related("project", "milestone", "assigned_to", "supervisor")
-            employee_ids = list(ba_tasks_qs.exclude(assigned_to_id__isnull=True).values_list("assigned_to_id", flat=True).distinct())
-            employee_rows = list(
-                User.objects.filter(id__in=employee_ids, profile__role=UserProfile.Roles.EMPLOYEE)
-                .annotate(
-                    assigned_tasks_count=Count(
-                        "tasks_assigned", filter=Q(tasks_assigned__created_by=user), distinct=True
-                    ),
-                    completed_tasks_count=Count(
-                        "tasks_assigned",
-                        filter=Q(tasks_assigned__created_by=user, tasks_assigned__status=Task.Status.COMPLETED),
-                        distinct=True,
-                    ),
-                    in_progress_tasks_count=Count(
-                        "tasks_assigned",
-                        filter=Q(tasks_assigned__created_by=user, tasks_assigned__status=Task.Status.IN_PROGRESS),
-                        distinct=True,
-                    ),
-                    delayed_tasks_count=Count(
-                        "tasks_assigned",
-                        filter=Q(tasks_assigned__created_by=user, tasks_assigned__status=Task.Status.DELAYED),
-                        distinct=True,
-                    ),
-                )
-                .values(
-                    "id",
-                    "first_name",
-                    "last_name",
-                    "email",
-                    "assigned_tasks_count",
-                    "completed_tasks_count",
-                    "in_progress_tasks_count",
-                    "delayed_tasks_count",
-                )
-                .order_by("first_name", "id")
-            )
-            employee_summary = []
-            for row in employee_rows:
-                tasks_for_employee = ba_tasks_qs.filter(assigned_to_id=row["id"]).order_by("-updated_at")
-                employee_summary.append(
-                    {
-                        "id": row["id"],
-                        "first_name": row["first_name"],
-                        "last_name": row["last_name"],
-                        "email": row["email"],
-                        "assigned_tasks": row["assigned_tasks_count"],
-                        "completed_tasks": row["completed_tasks_count"],
-                        "in_progress_tasks": row["in_progress_tasks_count"],
-                        "delayed_tasks": row["delayed_tasks_count"],
-                        "tasks": [
-                            {
-                                "id": task.id,
-                                "title": task.title,
-                                "status": task.status,
-                                "project_id": task.project_id,
-                                "project_name": _task_project_name(task),
-                                "milestone_id": task.milestone_id,
-                                "milestone_no": task.milestone.milestone_no if task.milestone else None,
-                                "milestone_name": task.milestone.name if task.milestone else None,
-                                "deadline": task.deadline,
-                                "total_time_spent_seconds": task.total_time_spent_seconds,
-                                "total_time_spent_display": humanize_duration(task.total_time_spent_seconds),
-                            }
-                            for task in tasks_for_employee
-                        ],
-                    }
-                )
-            task_ids = list(ba_tasks_qs.values_list("id", flat=True))
-            project_ids = list(ba_tasks_qs.values_list("project_id", flat=True).distinct())
-            milestone_ids = list(
-                ba_tasks_qs.exclude(milestone_id__isnull=True).values_list("milestone_id", flat=True).distinct()
-            )
-            project_qs = Project.objects.filter(id__in=project_ids)
-            milestone_qs = Milestone.objects.filter(id__in=milestone_ids)
-            task_status_counts = {
-                "not_started": ba_tasks_qs.filter(status=Task.Status.NOT_STARTED).count(),
-                "in_progress": ba_tasks_qs.filter(status=Task.Status.IN_PROGRESS).count(),
-                "paused": ba_tasks_qs.filter(status=Task.Status.PAUSED).count(),
-                "completed": ba_tasks_qs.filter(status=Task.Status.COMPLETED).count(),
-                "delayed": ba_tasks_qs.filter(status=Task.Status.DELAYED).count(),
-                "blocked": ba_tasks_qs.filter(status=Task.Status.BLOCKED).count(),
-            }
-            logs_qs = (
-                TimeLog.objects.select_related("task", "task__project", "user")
-                .filter(task_id__in=task_ids)
-                .order_by("-start_time")
-            )
-            recent_activity = []
-            for log in logs_qs[:80]:
-                user_name = log.user.get_full_name().strip() or log.user.email
-                recent_activity.append(
-                    {
-                        "action": "STARTED",
-                        "employee_name": user_name,
-                        "task_id": log.task_id,
-                        "task_title": log.task.title,
-                        "project_name": _task_project_name(log.task),
-                        "timestamp": log.start_time,
-                    }
-                )
-                if log.end_time:
-                    action = "PAUSED" if log.source == TimeLog.Source.MANUAL_PAUSE else "STOPPED"
-                    recent_activity.append(
-                        {
-                            "action": action,
-                            "employee_name": user_name,
-                            "task_id": log.task_id,
-                            "task_title": log.task.title,
-                            "project_name": _task_project_name(log.task),
-                            "timestamp": log.end_time,
-                        }
-                    )
-            recent_activity.sort(key=lambda item: item["timestamp"], reverse=True)
-            window_start = _recent_activity_window_start()
-            notification_events = _build_notification_recent_activity(user, window_start)
-            recent_activity = _merge_recent_activity_events(
-                recent_activity,
-                notification_events,
-                limit=20,
-            )
-            data = {
-                "tasks_created": ba_tasks_qs.count(),
-                "tasks_completed": ba_tasks_qs.filter(status=Task.Status.COMPLETED).count(),
-                "tasks_in_progress": ba_tasks_qs.filter(status=Task.Status.IN_PROGRESS).count(),
-                "tasks_delayed": ba_tasks_qs.filter(status=Task.Status.DELAYED).count(),
-                "assigned_employees": len(employee_ids),
-                "overview": {
-                    "projects_count": project_qs.count(),
-                    "tasks_count": ba_tasks_qs.count(),
-                    "employee_count": len(employee_ids),
-                },
-                "task_status_counts": task_status_counts,
-                "projects": [
-                    {
-                        "id": project.id,
-                        "name": project.name,
-                        "status": project.status,
-                        "start_date": project.start_date,
-                        "deadline": project.deadline,
-                    }
-                    for project in project_qs
-                ],
-                "milestones": [
-                    {
-                        "id": milestone.id,
-                        "milestone_no": milestone.milestone_no,
-                        "name": milestone.name,
-                        "project_id": milestone.project_id,
-                        "status": milestone.status,
-                        "start_date": milestone.start_date,
-                        "end_date": milestone.end_date,
-                    }
-                    for milestone in milestone_qs
-                ],
-                "tasks": [
-                    {
-                        "id": task.id,
-                        "title": task.title,
-                        "project_id": task.project_id,
-                        "project_name": _task_project_name(task),
-                        "milestone_name": task.milestone.name if task.milestone else None,
-                        "status": task.status,
-                    }
-                    for task in ba_tasks_qs.order_by("-updated_at")
-                ],
-                "recent_activity": recent_activity,
-                "employee_summary": employee_summary,
-            }
+            data = build_ba_dashboard_summary(user)
             return api_response(True, "BA dashboard fetched.", status.HTTP_200_OK, data)
         active_log = (
             TimeLog.objects.filter(user=user, end_time__isnull=True)
@@ -3599,6 +3801,11 @@ class MyTasksAPIView(APIView):
             .prefetch_related("project__files")
             .filter(assigned_to=request.user)
         ).order_by("-created_at")
+        scope = (request.query_params.get("scope") or "all").strip().lower()
+        if scope == "open":
+            tasks_qs = tasks_qs.exclude(status=Task.Status.COMPLETED)
+        elif scope == "completed":
+            tasks_qs = tasks_qs.filter(status=Task.Status.COMPLETED)
         page, paginator = paginate_request(request, tasks_qs)
         targets = page if page is not None else tasks_qs
         serializer = TaskSerializer(targets, many=True, context={"request": request})
