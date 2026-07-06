@@ -63,15 +63,14 @@ pipeline {
         stage('Setup Task Auto Stop Cron') {
             steps {
                 sh """
-                    if [ -f scripts/production/install-auto-stop-tasks-cron.sh ]; then
-                      chmod +x scripts/production/install-auto-stop-tasks-cron.sh
-                      chmod +x scripts/production/auto-stop-tasks.sh
-                      chmod +x scripts/production/auto-checkout-attendance-final.sh
-                      PMS_CONTAINER=${APP_NAME} ATTENDANCE_CONTAINER=hrms-attendance-prod scripts/production/install-auto-stop-tasks-cron.sh
-                    else
-                      echo "WARN: scripts/production/install-auto-stop-tasks-cron.sh not found; skip cron."
-                      echo "Ensure Jenkins checks out the monorepo root (Project_management)."
+                    if [ ! -f scripts/production/install-auto-stop-tasks-cron.sh ]; then
+                      echo "ERROR: scripts/production/install-auto-stop-tasks-cron.sh not found."
+                      echo "Commit scripts/production/ to the repo root, then redeploy."
+                      exit 1
                     fi
+                    chmod +x scripts/production/install-auto-stop-tasks-cron.sh
+                    chmod +x scripts/production/auto-stop-tasks.sh
+                    PMS_CONTAINER=${APP_NAME} scripts/production/install-auto-stop-tasks-cron.sh
                 """
             }
         }
