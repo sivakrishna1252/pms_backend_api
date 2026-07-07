@@ -69,7 +69,6 @@ pipeline {
                       exit 1
                     fi
                     chmod +x scripts/production/install-auto-stop-tasks-cron.sh
-                    chmod +x scripts/production/auto-stop-tasks.sh
                     PMS_CONTAINER=${APP_NAME} scripts/production/install-auto-stop-tasks-cron.sh
                 """
             }
