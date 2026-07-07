@@ -4,14 +4,15 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from pms_api.timer_auto_stop import auto_stop_all_running_timers
+from pms_api.timer_auto_stop import auto_stop_all_running_timers, is_past_auto_stop_cutoff
 from pms_api.views import _send_styled_email, _sync_parent_statuses_for_task
 
 
 class Command(BaseCommand):
     help = (
-        "Mon–Sat 8 PM job: stop every running task timer, email assignees, "
-        "and remind them not to forget again. Paused tasks are not touched."
+        "Mon–Sat 8 PM job: stop every running task timer once, email assignees, "
+        "then leave late-started tasks alone until the next 8 PM run. "
+        "Paused tasks are not touched."
     )
 
     def add_arguments(self, parser):
@@ -31,9 +32,7 @@ class Command(BaseCommand):
             if now_local.weekday() > 5:
                 self.stdout.write(self.style.WARNING("Skipped: Sunday (Mon–Sat only)."))
                 return
-            if now_local.hour < cutoff_hour or (
-                now_local.hour == cutoff_hour and now_local.minute < cutoff_minute
-            ):
+            if not is_past_auto_stop_cutoff(now_local):
                 self.stdout.write(
                     self.style.WARNING(
                         f"Skipped: before {cutoff_hour:02d}:{cutoff_minute:02d} local time "
