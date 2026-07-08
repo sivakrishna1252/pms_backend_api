@@ -63,13 +63,18 @@ pipeline {
         stage('Setup Task Auto Stop Cron') {
             steps {
                 sh """
-                    if [ ! -f scripts/production/install-auto-stop-tasks-cron.sh ]; then
-                      echo "ERROR: scripts/production/install-auto-stop-tasks-cron.sh not found."
-                      echo "Commit scripts/production/ to the repo root, then redeploy."
-                      exit 1
-                    fi
-                    chmod +x scripts/production/install-auto-stop-tasks-cron.sh
-                    PMS_CONTAINER=${APP_NAME} scripts/production/install-auto-stop-tasks-cron.sh
+                    CRON_TAG='pms-auto-stop-tasks-8pm'
+                    LOG_DIR='/tmp/pms'
+                    mkdir -p "\$LOG_DIR"
+                    (
+                      crontab -l 2>/dev/null | grep -v "\$CRON_TAG" || true
+                      crontab -l 2>/dev/null | grep -v 'pms-auto-stop-running-tasks' || true
+                      crontab -l 2>/dev/null | grep -v 'pms-evening-auto-stop' || true
+                      crontab -l 2>/dev/null | grep -v 'auto-stop-tasks.sh' || true
+                      echo 'CRON_TZ=Asia/Kolkata'
+                      echo "0 20 * * 1-6 docker exec ${APP_NAME} python manage.py auto_stop_task_timers --force >> \$LOG_DIR/auto-stop-tasks.log 2>&1 # \$CRON_TAG"
+                    ) | crontab -
+                    echo "Installed Mon-Sat 20:00 Asia/Kolkata task auto-stop cron for ${APP_NAME}"
                 """
             }
         }
