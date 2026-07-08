@@ -298,6 +298,14 @@ class Notification(TimeStampedModel):
     details = models.JSONField(null=True, blank=True)
 
 
+class TaskEveningAutoStopRun(TimeStampedModel):
+    """Records that the Mon-Sat 8 PM task auto-stop pass ran for a calendar date."""
+
+    run_date = models.DateField(unique=True)
+
+    class Meta:
+        ordering = ["-run_date"]
+
 
 #file attachments table
 class FileAttachment(TimeStampedModel):

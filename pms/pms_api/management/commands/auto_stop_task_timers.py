@@ -4,8 +4,8 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from pms_api.timer_auto_stop import auto_stop_all_running_timers, is_past_auto_stop_cutoff
-from pms_api.views import _send_styled_email, _sync_parent_statuses_for_task
+from pms_api.timer_auto_stop import is_past_auto_stop_cutoff, run_evening_auto_stop_if_due
+from pms_api.views import _sync_parent_statuses_for_task
 
 
 class Command(BaseCommand):
@@ -41,8 +41,9 @@ class Command(BaseCommand):
                 )
                 return
 
-        stopped_by_user = auto_stop_all_running_timers(
-            sync_task_status=True,
+        stopped_by_user = run_evening_auto_stop_if_due(
+            force=force,
+            notify=True,
             on_task_sync=_sync_parent_statuses_for_task,
         )
 
@@ -53,27 +54,6 @@ class Command(BaseCommand):
                 )
             )
             return
-
-        cutoff_label = f"{cutoff_hour:02d}:{cutoff_minute:02d}"
-        for email, payload in stopped_by_user.items():
-            task_lines = ", ".join(payload["tasks"]) or "N/A"
-            _send_styled_email(
-                subject=f"PMS: Task timer auto-stopped at {cutoff_label}",
-                recipient_list=[email],
-                greeting=f"Hi {payload['name']},",
-                intro_text=(
-                    f"You forgot to stop your task timer(s) before {cutoff_label}. "
-                    "PMS has auto-stopped them for you."
-                ),
-                detail_rows=[
-                    ("Auto-stopped tasks", task_lines),
-                    (
-                        "Reminder",
-                        "Please stop or pause your timer when you finish work. "
-                        "Do not forget again — paused tasks are never auto-stopped.",
-                    ),
-                ],
-            )
 
         total = sum(len(p["tasks"]) for p in stopped_by_user.values())
         self.stdout.write(
