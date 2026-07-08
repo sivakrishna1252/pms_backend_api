@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 # Install one cron job: Mon-Sat 8 PM (Asia/Kolkata) — stop running PMS task timers.
+# Uses docker exec directly (stable path; does not depend on Jenkins workspace).
 # Jenkins runs this after deploy, or on the server:
-#   chmod +x scripts/production/*.sh
 #   PMS_CONTAINER=pms-web-prod scripts/production/install-auto-stop-tasks-cron.sh
 
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AUTO_STOP_SCRIPT="$SCRIPT_DIR/auto-stop-tasks.sh"
-chmod +x "$AUTO_STOP_SCRIPT"
 
 PMS_CONTAINER="${PMS_CONTAINER:-pms-web-prod}"
 LOG_DIR="${LOG_DIR:-/var/log/pms}"
@@ -17,7 +13,7 @@ CRON_TZ="${CRON_TZ:-Asia/Kolkata}"
 
 mkdir -p "$LOG_DIR" 2>/dev/null || sudo mkdir -p "$LOG_DIR" 2>/dev/null || LOG_DIR="/tmp/pms"
 
-CRON_LINE="0 20 * * 1-6 PMS_CONTAINER=$PMS_CONTAINER LOG_DIR=$LOG_DIR $AUTO_STOP_SCRIPT >> $LOG_DIR/auto-stop-tasks.log 2>&1 # $CRON_TAG"
+CRON_LINE="0 20 * * 1-6 docker exec $PMS_CONTAINER python manage.py auto_stop_task_timers --force >> $LOG_DIR/auto-stop-tasks.log 2>&1 # $CRON_TAG"
 
 install_user_crontab() {
   local user="${1:-$(whoami)}"
@@ -25,6 +21,7 @@ install_user_crontab() {
     crontab -u "$user" -l 2>/dev/null | grep -v "$CRON_TAG" || true
     crontab -u "$user" -l 2>/dev/null | grep -v "pms-auto-stop-running-tasks" || true
     crontab -u "$user" -l 2>/dev/null | grep -v "pms-evening-auto-stop" || true
+    crontab -u "$user" -l 2>/dev/null | grep -v "auto-stop-tasks.sh" || true
     echo "CRON_TZ=$CRON_TZ"
     echo "$CRON_LINE"
   ) | crontab -u "$user" -
@@ -37,8 +34,6 @@ install_cron_d() {
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 CRON_TZ=$CRON_TZ
-PMS_CONTAINER=$PMS_CONTAINER
-LOG_DIR=$LOG_DIR
 
 $CRON_LINE
 EOF
@@ -53,4 +48,5 @@ else
 fi
 
 echo "Logs: $LOG_DIR/auto-stop-tasks.log"
+echo "Cron: $CRON_LINE"
 echo "Test: docker exec $PMS_CONTAINER python manage.py auto_stop_task_timers --force"
