@@ -52,6 +52,7 @@ pipeline {
                           --restart unless-stopped \\
                           --env-file "\$PMS_ENV_FILE" \\
                           -e ALLOWED_HOSTS="${ALLOWED_HOSTS_VALUE}" \\
+                          -e TZ=Asia/Kolkata \\
                           -p ${HOST_PORT}:${CONTAINER_PORT} \\
                           -v ${APP_NAME}_media:/app/media \\
                           ${IMAGE_NAME}:${BUILD_NUMBER}
@@ -63,18 +64,8 @@ pipeline {
         stage('Setup Task Auto Stop Cron') {
             steps {
                 sh """
-                    CRON_TAG='pms-auto-stop-tasks-8pm'
-                    LOG_DIR='/tmp/pms'
-                    mkdir -p "\$LOG_DIR"
-                    (
-                      crontab -l 2>/dev/null | grep -v "\$CRON_TAG" || true
-                      crontab -l 2>/dev/null | grep -v 'pms-auto-stop-running-tasks' || true
-                      crontab -l 2>/dev/null | grep -v 'pms-evening-auto-stop' || true
-                      crontab -l 2>/dev/null | grep -v 'auto-stop-tasks.sh' || true
-                      echo 'CRON_TZ=Asia/Kolkata'
-                      echo "0 20 * * 1-6 docker exec ${APP_NAME} python manage.py auto_stop_task_timers --force >> \$LOG_DIR/auto-stop-tasks.log 2>&1 # \$CRON_TAG"
-                    ) | crontab -
-                    echo "Installed Mon-Sat 20:00 Asia/Kolkata task auto-stop cron for ${APP_NAME}"
+                    chmod +x scripts/production/*.sh
+                    PMS_CONTAINER=${APP_NAME} scripts/production/install-auto-stop-tasks-cron.sh
                 """
             }
         }

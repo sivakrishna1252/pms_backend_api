@@ -28,6 +28,10 @@ class Command(BaseCommand):
         cutoff_hour = int(getattr(settings, "AUTO_STOP_CUTOFF_HOUR", 20))
         cutoff_minute = int(getattr(settings, "AUTO_STOP_CUTOFF_MINUTE", 0))
 
+        self.stdout.write(
+            f"Local time: {now_local:%Y-%m-%d %H:%M:%S %Z} ({settings.TIME_ZONE})"
+        )
+
         if not force:
             if now_local.weekday() > 5:
                 self.stdout.write(self.style.WARNING("Skipped: Sunday (Mon–Sat only)."))
