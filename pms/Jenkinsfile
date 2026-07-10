@@ -70,7 +70,7 @@ pipeline {
                     fi
                     chmod +x scripts/production/*.sh
                     PMS_CONTAINER=${APP_NAME} scripts/production/install-auto-stop-tasks-cron.sh
-                    crontab -l | grep '${APP_NAME}' | grep auto-stop | grep '30 14' || (echo 'ERROR: auto-stop cron must be 30 14 UTC (8 PM IST)' && exit 1)
+                    crontab -l | grep '${APP_NAME}' | grep -F '30 14' | grep -F auto-stop || (echo 'ERROR: auto-stop cron must be 30 14 UTC (8 PM IST)' && exit 1)
                     crontab -l | grep -E 'auto_stop_task_timers|auto-stop' | grep -- '--force' && (echo 'ERROR: legacy --force auto-stop cron still present' && exit 1) || true
                 """
             }

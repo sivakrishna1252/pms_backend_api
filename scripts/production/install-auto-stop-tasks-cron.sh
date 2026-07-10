@@ -34,17 +34,17 @@ filter_old_cron() {
 echo "Installed Mon-Sat 20:00 Asia/Kolkata ($CRON_SCHEDULE UTC) task auto-stop cron for $PMS_CONTAINER"
 crontab -l | grep -E "auto-stop|$CRON_TAG" || true
 
-if ! crontab -l | grep -q "$CRON_SCHEDULE"; then
+if ! crontab -l | grep -Fq "$CRON_SCHEDULE"; then
   echo "ERROR: expected cron schedule $CRON_SCHEDULE was not installed."
   exit 1
 fi
 
-if crontab -l | grep -E "auto_stop_task_timers|auto-stop" | grep -q "\-\-force"; then
+if crontab -l | grep -E "auto_stop_task_timers|auto-stop" | grep -Fq -- "--force"; then
   echo "ERROR: found legacy auto-stop cron using --force. Remove it manually."
   exit 1
 fi
 
-if crontab -l | grep -E "auto_stop_task_timers|auto-stop" | grep -qE "^0 20"; then
+if crontab -l | grep -E "auto_stop_task_timers|auto-stop" | grep -Fq "0 20 * *"; then
   echo "ERROR: found legacy 0 20 UTC cron (fires at 1:30 AM IST). Remove it manually."
   exit 1
 fi
