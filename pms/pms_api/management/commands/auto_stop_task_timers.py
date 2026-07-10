@@ -48,7 +48,7 @@ class Command(BaseCommand):
                     )
                 )
                 return
-            if not is_auto_stop_allowed_now(now_local, force=False):
+            if not is_auto_stop_allowed_now(now_local):
                 self.stdout.write(
                     self.style.WARNING(
                         "Skipped: outside allowed auto-stop window "
@@ -60,6 +60,7 @@ class Command(BaseCommand):
         stopped_by_user = run_evening_auto_stop_if_due(
             force=force,
             notify=True,
+            allow_outside_window=force,
             on_task_sync=_sync_parent_statuses_for_task,
         )
 

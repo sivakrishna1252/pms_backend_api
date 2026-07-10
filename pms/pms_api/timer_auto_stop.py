@@ -48,15 +48,12 @@ def needs_stale_timer_catchup(now_local=None) -> bool:
     return running_time_logs_queryset().filter(start_time__date__lt=today).exists()
 
 
-def is_auto_stop_allowed_now(now_local=None, *, force: bool = False) -> bool:
+def is_auto_stop_allowed_now(now_local=None) -> bool:
     """
     When cron/host timezone is wrong, refuse to auto-stop or email outside allowed hours.
     - Evening window: ~8 PM through midnight (Mon-Sat).
     - Daytime catch-up: 8 AM until cutoff for multi-day stale timers only.
-    --force bypasses this (manual testing only; never use in production cron).
     """
-    if force:
-        return True
     now_local = now_local or timezone.localtime()
     if now_local.weekday() > 5:
         return False
@@ -168,7 +165,13 @@ def send_evening_auto_stop_emails(stopped_by_user: dict[str, dict]) -> None:
         )
 
 
-def run_evening_auto_stop_if_due(*, force: bool = False, notify: bool = True, on_task_sync=None):
+def run_evening_auto_stop_if_due(
+    *,
+    force: bool = False,
+    notify: bool = True,
+    allow_outside_window: bool = False,
+    on_task_sync=None,
+):
     """
     Run the evening pass once per Mon-Sat date:
     - at/after 8 PM via cron, or
@@ -179,8 +182,11 @@ def run_evening_auto_stop_if_due(*, force: bool = False, notify: bool = True, on
     if not force and now_local.weekday() > 5:
         return {}
 
-    if not is_auto_stop_allowed_now(now_local, force=force):
+    in_window = is_auto_stop_allowed_now(now_local)
+    if not in_window and not allow_outside_window:
         return {}
+    if notify and not in_window and not allow_outside_window:
+        notify = False
 
     pending_dates = pending_evening_run_dates(now_local)
     if not pending_dates and not force:
