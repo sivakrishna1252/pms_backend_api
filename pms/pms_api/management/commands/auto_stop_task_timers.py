@@ -4,7 +4,11 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from pms_api.timer_auto_stop import is_past_auto_stop_cutoff, run_evening_auto_stop_if_due
+from pms_api.timer_auto_stop import (
+    is_auto_stop_allowed_now,
+    is_past_auto_stop_cutoff,
+    run_evening_auto_stop_if_due,
+)
 from pms_api.views import _sync_parent_statuses_for_task
 
 
@@ -41,6 +45,14 @@ class Command(BaseCommand):
                     self.style.WARNING(
                         f"Skipped: before {cutoff_hour:02d}:{cutoff_minute:02d} local time "
                         f"({settings.TIME_ZONE})."
+                    )
+                )
+                return
+            if not is_auto_stop_allowed_now(now_local, force=False):
+                self.stdout.write(
+                    self.style.WARNING(
+                        "Skipped: outside allowed auto-stop window "
+                        f"({settings.TIME_ZONE}). Cron may be using UTC; fix server schedule."
                     )
                 )
                 return

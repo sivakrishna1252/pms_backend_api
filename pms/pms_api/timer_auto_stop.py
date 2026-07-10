@@ -30,6 +30,43 @@ def is_past_auto_stop_cutoff(now_local=None) -> bool:
     return now_local >= auto_stop_cutoff_local(now_local)
 
 
+def is_evening_auto_stop_window(now_local=None) -> bool:
+    """Mon-Sat from a few minutes before cutoff through end of local day."""
+    now_local = now_local or timezone.localtime()
+    if now_local.weekday() > 5:
+        return False
+    cutoff = auto_stop_cutoff_local(now_local)
+    earliest = cutoff - timedelta(minutes=5)
+    end_of_day = now_local.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return earliest <= now_local <= end_of_day
+
+
+def needs_stale_timer_catchup(now_local=None) -> bool:
+    """Running timers that started on a prior calendar day (missed evening pass)."""
+    now_local = now_local or timezone.localtime()
+    today = now_local.date()
+    return running_time_logs_queryset().filter(start_time__date__lt=today).exists()
+
+
+def is_auto_stop_allowed_now(now_local=None, *, force: bool = False) -> bool:
+    """
+    When cron/host timezone is wrong, refuse to auto-stop or email outside allowed hours.
+    - Evening window: ~8 PM through midnight (Mon-Sat).
+    - Daytime catch-up: 8 AM until cutoff for multi-day stale timers only.
+    --force bypasses this (manual testing only; never use in production cron).
+    """
+    if force:
+        return True
+    now_local = now_local or timezone.localtime()
+    if now_local.weekday() > 5:
+        return False
+    cutoff_hour = int(getattr(settings, "AUTO_STOP_CUTOFF_HOUR", 20))
+    daytime_catchup = (
+        8 <= now_local.hour < cutoff_hour and needs_stale_timer_catchup(now_local)
+    )
+    return is_evening_auto_stop_window(now_local) or daytime_catchup
+
+
 def _cutoff_for_date(run_date, tzinfo):
     hour = int(getattr(settings, "AUTO_STOP_CUTOFF_HOUR", 20))
     minute = int(getattr(settings, "AUTO_STOP_CUTOFF_MINUTE", 0))
@@ -140,6 +177,9 @@ def run_evening_auto_stop_if_due(*, force: bool = False, notify: bool = True, on
     """
     now_local = timezone.localtime()
     if not force and now_local.weekday() > 5:
+        return {}
+
+    if not is_auto_stop_allowed_now(now_local, force=force):
         return {}
 
     pending_dates = pending_evening_run_dates(now_local)
